@@ -1,4 +1,4 @@
-"""Geometry tests for v0.2.1 (responsive layout, no overlaps, segment cards).
+"""Geometry tests for v0.2.1/v0.2.2 (responsive layout, no overlaps, compact panels, segment cards).
 
 Run with QT_QPA_PLATFORM=offscreen and VIDEO_TRIMMER_NO_AUDIO=1.
 """
@@ -27,10 +27,10 @@ from video_trimmer.ui.widgets import GlassPanel
 
 from conftest import FFMPEG
 
-SIZES = [(760, 560), (1024, 700), (1366, 768), (1920, 1040), (2560, 1400), "max"]
+SIZES = [(960, 600), (1024, 700), (1366, 768), (1920, 1040), (2560, 1400), "max"]
 THEMES = ["light", "dark"]
 LANGS = ["en", "ru", "uk"]
-MIN_W, MIN_H = 760, 560
+MIN_W, MIN_H = 960, 600
 
 
 def size_id(s):
@@ -88,8 +88,13 @@ def make_window(app, monkeypatch, tmp_path):
         windows.append(w)
         w.set_theme(th)
         w.set_language(lang)
-        if size == "max":
+        small_screen = app.primaryScreen().availableGeometry().width() < MIN_W
+        if size == "max" and not small_screen:
             w.showMaximized()
+        elif size == "max":
+            # the offscreen screen (800x600) is smaller than the minimum window: use a big window
+            w.resize(1600, 900)
+            w.show()
         else:
             w.resize(*size)
             w.show()
@@ -145,12 +150,11 @@ def interactive_widgets(w: MainWindow) -> list[QWidget]:
 
 
 def named_geometry(w: MainWindow) -> dict:
-    names = ["open_button", "theme_button", "play_button", "mute_button", "set_start_button",
-             "set_end_button", "add_button", "remove_button", "fast_radio", "precise_radio",
-             "save_button", "language_combo", "video_widget", "position_slider", "volume_slider",
+    names = ["open_button", "settings_button", "play_button", "mute_button", "set_start_button",
+             "set_end_button", "add_button", "clear_button", "fast_radio", "precise_radio",
+             "info_button", "save_button", "video_widget", "position_slider", "volume_slider",
              "range_slider", "start_edit", "end_edit", "position_label", "progress_bar",
-             "segment_list", "title_label", "language_label", "start_label", "end_label",
-             "mode_label", "status_label"]
+             "segment_list", "title_label", "start_label", "end_label", "mode_label"]
     c = content(w)
     geo = {n: rect_in(getattr(w, n), c).getRect() for n in names}
     for i, p in enumerate(w.findChildren(GlassPanel)):
@@ -178,7 +182,7 @@ def test_panels_and_controls_do_not_overlap(make_window, size, th, lang):
     assert len(owners) == 1, f"video {vrect} not inside exactly one panel: {rects}"
     # interactive widgets do not intersect one another
     items = interactive_widgets(w)
-    assert len(items) >= 14
+    assert len(items) >= 15
     boxes = [(x, rect_in(x, c)) for x in items if x.isVisibleTo(w)]
     for (xa, a), (xb, b) in itertools.combinations(boxes, 2):
         assert not intersects(a, b), f"{xa} {a} overlaps {xb} {b}"
@@ -220,7 +224,7 @@ def test_every_control_is_visible_and_reachable(make_window, size, th, lang):
 def test_minimum_size_and_initial_size(make_window, app):
     w = make_window("en", "light", (1024, 700), load=False)
     assert w.minimumWidth() <= MIN_W + 40 and w.minimumHeight() <= MIN_H + 40
-    assert w.minimumWidth() >= 600
+    assert w.minimumWidth() >= 900
     fresh = MainWindow()
     geo = app.primaryScreen().availableGeometry()
     assert fresh.width() <= max(int(geo.width() * 0.9), fresh.minimumWidth())
@@ -229,9 +233,14 @@ def test_minimum_size_and_initial_size(make_window, app):
 
 
 def test_small_window_scrolls_instead_of_clipping(make_window):
-    w = make_window("ru", "light", (MIN_W, MIN_H))
+    w = make_window("ru", "light", (MIN_W, MIN_H), segments=25)
     sa = scroll_area(w)
-    assert sa.verticalScrollBar().maximum() > 0       # content is taller: it scrolls
+    assert not sa.horizontalScrollBar().isVisible()
+    # a screen/window shorter than the content: it scrolls, nothing is clipped
+    w.setMinimumSize(0, 0)
+    w.resize(MIN_W, 300)
+    pump()
+    assert sa.verticalScrollBar().maximum() > 0
     assert not sa.horizontalScrollBar().isVisible()
     sa.verticalScrollBar().setValue(sa.verticalScrollBar().maximum())
     pump()
@@ -244,7 +253,7 @@ def test_small_window_scrolls_instead_of_clipping(make_window):
 
 # ------------------------------------------------------------------ (c) language does not change geometry
 
-@pytest.mark.parametrize("size", [(760, 560), (1366, 768), (1920, 1040), "max"], ids=size_id)
+@pytest.mark.parametrize("size", [(960, 600), (1366, 768), (1920, 1040), "max"], ids=size_id)
 @pytest.mark.parametrize("th", THEMES)
 def test_geometry_is_identical_across_languages(make_window, size, th):
     w = make_window("en", th, size, segments=3)
@@ -260,7 +269,7 @@ def test_geometry_is_identical_across_languages(make_window, size, th):
 def test_texts_are_elided_not_stretched(make_window):
     w = make_window("en", "light", (MIN_W, MIN_H))
     before = named_geometry(w)
-    w.status_label.setText("x" * 400)
+    w.progress_bar.setText("x" * 400)
     pump()
     assert named_geometry(w) == before
 
@@ -268,7 +277,7 @@ def test_texts_are_elided_not_stretched(make_window):
 # ------------------------------------------------------------------ (d) segment cards
 
 @pytest.mark.parametrize("n", [1, 7, 25])
-@pytest.mark.parametrize("size", [(MIN_W, MIN_H), (1024, 700), (1920, 1040)], ids=size_id)
+@pytest.mark.parametrize("size", [(MIN_W, MIN_H), (1366, 768), (1920, 1040)], ids=size_id)
 @pytest.mark.parametrize("th", THEMES)
 def test_cards_do_not_overlap_wrap_and_are_not_clipped(make_window, n, size, th):
     w = make_window("uk", th, size, segments=n)
@@ -300,12 +309,12 @@ def test_cards_do_not_overlap_wrap_and_are_not_clipped(make_window, n, size, th)
                 f"clipped: {label.text()!r} in {label.width()}px")
             assert c.rect().contains(rect_in(label, c))
         assert c.delete_button.isVisibleTo(w) and c.delete_button.width() > 0
-    # height grows to about three rows, then scrolls
+    # height grows to about two rows, then scrolls (compact layout)
     sa_h = lst.height()
-    assert sa_h <= 3 * ch + 2 * 12 + 40
-    if len(rows) > 3:
+    assert sa_h <= 2 * ch + 2 * 12 + 40
+    if len(rows) > 2:
         assert lst.verticalScrollBar().maximum() > 0
-    if len(rows) <= 3:
+    if len(rows) <= 2:
         assert lst.verticalScrollBar().maximum() == 0
     # the card of the longest content fits: hours format
     assert any(":" in lbl.text() and "9:" in lbl.text() for c in cards for lbl in c.text_labels()) or n == 1
@@ -347,7 +356,9 @@ def test_card_delete_button_removes_that_segment(make_window):
             QTest.mouseClick(w.segment_list.cards()[0].delete_button, Qt.LeftButton)
             pump()
     assert len(w.segments()) == 1
-    w.remove_segment()
+    last = w.segment_list.cards()[0]
+    assert not last.delete_button.isEnabled()          # the cross is disabled on the only segment
+    w.remove_segment_at(0)
     assert len(w.segments()) == 1
 
 

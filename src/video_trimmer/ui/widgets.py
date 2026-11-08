@@ -1,10 +1,11 @@
 """Glass-styled custom widgets: background, panel, pill/round buttons, slider, combo box."""
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import (
     QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPen, QBrush,
 )
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractButton, QComboBox, QFrame, QLabel, QPushButton, QSizePolicy, QSlider, QVBoxLayout,
     QWidget,
@@ -102,8 +103,8 @@ class GlassPanel(QFrame):
         self.setAttribute(Qt.WA_StyledBackground, False)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.body = QVBoxLayout(self)
-        self.body.setContentsMargins(18, 14, 18, 16)
-        self.body.setSpacing(10)
+        self.body.setContentsMargins(11, 6, 11, 7)
+        self.body.setSpacing(4)
         self.caption = ElidedLabel(title)
         self.caption.setObjectName("caption")
         self.body.addWidget(self.caption)
@@ -130,6 +131,8 @@ class GlassButton(QPushButton):
     ``primary=True`` gives the accent-coloured call-to-action look.
     """
 
+    HEIGHT = 36
+    PAD = 26             # horizontal room around the text
     MIN_TEXT_WIDTH = 104  # a text button may be squeezed down to this (text is then elided)
 
     def __init__(self, text: str = "", icon_kind: str | None = None, primary: bool = False,
@@ -147,7 +150,7 @@ class GlassButton(QPushButton):
         if icon_kind:
             self.setFixedSize(diameter, diameter)
         else:
-            self.setMinimumHeight(40)
+            self.setMinimumHeight(self.HEIGHT)
             self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         theme.add_shadow(self, blur=16, dy=4, strength=0.8)
 
@@ -182,8 +185,8 @@ class GlassButton(QPushButton):
         if self._icon_kind:
             return QSize(self._diameter, self._diameter)
         fm = self._bold_metrics()
-        w = max(fm.horizontalAdvance(t) for t in (self._texts or [self.text()])) + 36
-        return QSize(max(w, 96), 40)
+        w = max(fm.horizontalAdvance(t) for t in (self._texts or [self.text()])) + self.PAD
+        return QSize(max(w, 80), self.HEIGHT)
 
     def minimumSizeHint(self) -> QSize:  # noqa: N802
         if self._icon_kind:
@@ -297,7 +300,7 @@ class GlassButton(QPushButton):
             p.setFont(font)
             p.setPen(text_color)
             text = QFontMetrics(font).elidedText(self.text(), Qt.ElideRight,
-                                                 max(int(content.width()) - 20, 10))
+                                                 max(int(content.width()) - 8, 10))
             p.drawText(content, Qt.AlignCenter, text)
 
 
@@ -422,3 +425,113 @@ class CloseButton(QAbstractButton):
             p.setBrush(Qt.NoBrush)
             p.setPen(QPen(with_alpha(th.accent, 0.9), 1.3, Qt.DashLine))
             p.drawEllipse(r.adjusted(-1, -1, 1, 1))
+
+
+class StatusProgressBar(QWidget):
+    """Wide glass progress bar with the status text inside it (elided, never stretches anything)."""
+
+    HEIGHT = 28
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._min, self._max, self._value = 0, 100, 0
+        self._text = ""
+        self.setFixedHeight(self.HEIGHT)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+
+    # progress API (same names as QProgressBar)
+    def setRange(self, lo: int, hi: int) -> None:  # noqa: N802
+        self._min, self._max = lo, max(hi, lo)
+        self.update()
+
+    def setValue(self, value: int) -> None:  # noqa: N802
+        self._value = min(max(int(value), self._min), self._max)
+        self.update()
+
+    def value(self) -> int:
+        return self._value
+
+    # status text API (same names as QLabel)
+    def setText(self, text: str) -> None:  # noqa: N802
+        self._text = text
+        self.setToolTip(text)
+        self.update()
+
+    def text(self) -> str:
+        return self._text
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return QSize(300, self.HEIGHT)
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return QSize(120, self.HEIGHT)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        th = theme.current()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect()).adjusted(1, 3, -1, -3)
+        radius = r.height() / 2
+        p.setBrush(th.track)
+        p.setPen(QPen(th.track_border, 1.0))
+        p.drawRoundedRect(r, radius, radius)
+        span = self._max - self._min
+        frac = (self._value - self._min) / span if span > 0 else 0.0
+        if frac > 0:
+            fr = QRectF(r.left(), r.top(), max(r.width() * frac, r.height()), r.height())
+            g = QLinearGradient(fr.topLeft(), fr.topRight())
+            g.setColorAt(0.0, with_alpha(th.accent2, 0.75))
+            g.setColorAt(1.0, with_alpha(th.accent, 0.75))
+            p.setPen(Qt.NoPen)
+            p.setBrush(g)
+            p.drawRoundedRect(fr, radius, radius)
+        font = self.font()
+        font.setPixelSize(12)
+        p.setFont(font)
+        p.setPen(th.text)
+        text = QFontMetrics(font).elidedText(self._text, Qt.ElideRight, max(int(r.width()) - 24, 10))
+        p.drawText(r, Qt.AlignCenter, text)
+
+
+class GlassPopup(QFrame):
+    """Small frameless glass popup (closes on a click outside). ``body`` is its layout."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.body = QVBoxLayout(self)
+        self.body.setContentsMargins(16, 12, 16, 14)
+        self.body.setSpacing(8)
+
+    def popup_below(self, anchor: QWidget, align_right: bool = True, above: bool = False) -> None:
+        """Show next to ``anchor`` (below or above it), kept inside the screen."""
+        self.ensurePolished()
+        self.layout().activate()
+        self.adjustSize()
+        size = self.sizeHint().expandedTo(self.minimumSizeHint())
+        self.resize(size)
+        gap = 6
+        if above:
+            pos = anchor.mapToGlobal(QPoint(0, -size.height() - gap))
+        else:
+            pos = anchor.mapToGlobal(QPoint(0, anchor.height() + gap))
+        if align_right:
+            pos.setX(anchor.mapToGlobal(QPoint(anchor.width(), 0)).x() - size.width())
+        screen = QGuiApplication.screenAt(anchor.mapToGlobal(anchor.rect().center())) \
+            or QGuiApplication.primaryScreen()
+        if screen is not None:
+            geo = screen.availableGeometry()
+            pos.setX(min(max(pos.x(), geo.left() + 4), geo.right() - size.width() - 4))
+            pos.setY(min(max(pos.y(), geo.top() + 4), geo.bottom() - size.height() - 4))
+        self.move(pos)
+        self.show()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        th = theme.current()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        path = QPainterPath()
+        path.addRoundedRect(r, 20, 20)
+        p.fillPath(path, th.popup_bg)
+        paint_glass(p, r, th, 20.0)

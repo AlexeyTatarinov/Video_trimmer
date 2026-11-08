@@ -178,6 +178,16 @@ def save_theme_name(settings, name: str) -> None:
     settings.sync()
 
 
+def load_language(settings, available, default: str) -> str:
+    code = str(settings.value("language", default))
+    return code if code in available else default
+
+
+def save_language(settings, code: str) -> None:
+    settings.setValue("language", code)
+    settings.sync()
+
+
 # --------------------------------------------------------------------------- stylesheet
 def stylesheet(th: Theme) -> str:
     """Style sheet for the standard widgets (custom widgets paint themselves)."""
@@ -188,10 +198,11 @@ QLabel#title {{ font-size: 21px; font-weight: 600; }}
 QLabel#caption {{ color: {css(th.text_dim)}; font-size: 11px; font-weight: 600; letter-spacing: 1px; }}
 QLabel#time {{ color: {css(th.text)}; font-size: 13px; font-weight: 600; }}
 QLabel#status {{ color: {css(th.text_dim)}; }}
+QLabel#popupText {{ color: {css(th.text)}; font-size: 13px; }}
 QLineEdit {{
     color: {css(th.text)}; background: {css(th.input_bg)};
-    border: 1px solid {css(th.input_border)}; border-radius: 17px;
-    padding: 6px 14px; min-height: 22px; selection-background-color: {css(th.accent)};
+    border: 1px solid {css(th.input_border)}; border-radius: 15px;
+    padding: 3px 8px; min-height: 22px; selection-background-color: {css(th.accent)};
     selection-color: white;
 }}
 QLineEdit:focus {{ border: 1px solid {css(th.accent)}; }}
@@ -432,6 +443,30 @@ def paint_icon(p: QPainter, kind: str, rect: QRectF, color: QColor, muted: bool 
         p.setPen(Qt.NoPen)
         p.setBrush(color)
         p.drawPath(outer.subtracted(cut))
+    elif kind == "gear":
+        import math
+        teeth, r_out, r_in = 8, s * 0.40, s * 0.30
+        path = QPainterPath()
+        steps = teeth * 4
+        for k in range(steps):
+            a = 2 * math.pi * k / steps
+            r = r_out if (k % 4) in (0, 1) else r_in
+            pt = QPointF(c.x() + math.cos(a) * r, c.y() + math.sin(a) * r)
+            path.moveTo(pt) if k == 0 else path.lineTo(pt)
+        path.closeSubpath()
+        hole = QPainterPath()
+        hole.addEllipse(c, s * 0.13, s * 0.13)
+        p.setPen(Qt.NoPen)
+        p.setBrush(color)
+        p.drawPath(path.subtracted(hole))
+    elif kind == "question":
+        from PySide6.QtGui import QFont
+        font = QFont(p.font())
+        font.setBold(True)
+        font.setPixelSize(max(int(s * 1.05), 8))
+        p.setFont(font)
+        p.setPen(color)
+        p.drawText(rect, Qt.AlignCenter, "?")
     elif kind == "folder":
         path = QPainterPath()
         l, t, r, b = c.x() - s * 0.34, c.y() - s * 0.24, c.x() + s * 0.34, c.y() + s * 0.26

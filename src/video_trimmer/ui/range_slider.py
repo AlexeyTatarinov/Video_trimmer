@@ -27,7 +27,7 @@ class RangeSlider(QWidget):
         self._active: str | None = None
         self._hover = False
         self.setAttribute(Qt.WA_Hover, True)
-        self.setMinimumHeight(40)
+        self.setMinimumHeight(32)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
     # ---- value logic (pure clamping)
