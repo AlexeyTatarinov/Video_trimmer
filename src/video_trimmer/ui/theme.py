@@ -188,6 +188,17 @@ def save_language(settings, code: str) -> None:
     settings.sync()
 
 
+def load_auto_close(settings) -> bool:
+    """"Close the program automatically after export" (default OFF)."""
+    value = settings.value("auto_close_after_export", False)
+    return value if isinstance(value, bool) else str(value).strip().lower() in ("true", "1", "yes")
+
+
+def save_auto_close(settings, enabled: bool) -> None:
+    settings.setValue("auto_close_after_export", bool(enabled))
+    settings.sync()
+
+
 # --------------------------------------------------------------------------- stylesheet
 def stylesheet(th: Theme) -> str:
     """Style sheet for the standard widgets (custom widgets paint themselves)."""

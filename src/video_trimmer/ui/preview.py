@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtCore import QObject, QSize, QTimer, Qt, QUrl, Signal
+from PySide6.QtCore import QObject, QRectF, QSize, QTimer, Qt, QUrl, Signal
+from PySide6.QtGui import QPainterPath, QRegion
 from PySide6.QtWidgets import QLabel, QSizePolicy, QWidget
 
 try:  # QtMultimedia is shipped in PySide6-Addons, not in PySide6-Essentials
@@ -28,6 +29,7 @@ if MULTIMEDIA_AVAILABLE:
         """
 
         doubleClicked = Signal()
+        CORNER_RADIUS = 22.0   # same as the glass panel it sits in (widgets.PANEL_RADIUS)
 
         def __init__(self, parent: QWidget | None = None) -> None:
             super().__init__(parent)
@@ -40,6 +42,24 @@ if MULTIMEDIA_AVAILABLE:
                 event.accept()
             else:
                 super().mouseDoubleClickEvent(event)
+
+        def resizeEvent(self, event) -> None:  # noqa: N802
+            super().resizeEvent(event)
+            self._update_mask()
+
+        def showEvent(self, event) -> None:  # noqa: N802
+            super().showEvent(event)
+            self._update_mask()
+
+        def _update_mask(self) -> None:
+            """Clip the picture to rounded corners (the full-screen picture is not this widget)."""
+            r = self.CORNER_RADIUS
+            if self.width() <= 2 * r or self.height() <= 2 * r:
+                self.clearMask()
+                return
+            path = QPainterPath()
+            path.addRoundedRect(QRectF(0, 0, self.width(), self.height()), r, r)
+            self.setMask(QRegion(path.toFillPolygon().toPolygon()))
 
         def sizeHint(self) -> QSize:  # noqa: N802
             return QSize(VIDEO_HINT_SIZE)

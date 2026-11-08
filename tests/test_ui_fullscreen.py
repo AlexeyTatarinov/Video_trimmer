@@ -262,10 +262,10 @@ def test_panels_are_hidden_when_fullscreen_starts(fs):
     assert not fs.toast.isVisible()
 
 
-def test_header_has_one_centred_cross_button_that_only_leaves_fullscreen(win, fs):
+def test_header_has_a_centred_cross_button_that_only_leaves_fullscreen(win, fs):
     reveal_header(fs)
     buttons = fs.header.findChildren(QAbstractButton)
-    assert buttons == [fs.exit_button]
+    assert set(buttons) == {fs.exit_button, fs.export_button}      # v0.2.4: Export next to the cross
     assert fs.exit_button.toolTip() == i18n.tr("en", "exit_fullscreen") == "Exit full screen"
     assert fs.exit_button.iconKind() == "cross"
     assert fs.exit_button.width() == fs.exit_button.height()              # round
