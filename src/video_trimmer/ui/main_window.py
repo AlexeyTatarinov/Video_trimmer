@@ -10,7 +10,9 @@ from PySide6.QtWidgets import (
     QMessageBox, QScrollArea, QSizePolicy, QVBoxLayout,
 )
 
-from video_trimmer import core, i18n
+import os
+
+from video_trimmer import core, i18n, trash
 from video_trimmer.ui import theme
 from video_trimmer.ui.preview import PreviewPlayer
 from video_trimmer.ui.range_slider import RangeSlider
@@ -55,6 +57,7 @@ class MainWindow(QMainWindow):
         self._busy = False
         self._exporting = False
         self._auto_close = theme.load_auto_close(self._settings)
+        self._delete_source = theme.load_delete_source(self._settings)
         self._auto_close_timer = QTimer(self)
         self._auto_close_timer.setSingleShot(True)
         self._auto_close_timer.timeout.connect(self._auto_close_now)
@@ -75,7 +78,7 @@ class MainWindow(QMainWindow):
         self.retranslate()
         self._update_enabled()
         theme.apply_theme(self, self.theme_name)
-        self.settings_popup.sync(self.language, self.theme_name, self._auto_close)
+        self._sync_settings_popup()
 
     # ------------------------------------------------------------------ build
     def _build_ui(self) -> None:
@@ -110,6 +113,7 @@ class MainWindow(QMainWindow):
         self.settings_popup.languageChosen.connect(self.set_language)
         self.settings_popup.themeChosen.connect(self.set_theme)
         self.settings_popup.autoCloseChanged.connect(self.set_auto_close)
+        self.settings_popup.deleteSourceChanged.connect(self.set_delete_source)
         header.addWidget(self.title_label)
         header.addStretch(1)
         header.addWidget(self.open_button)
@@ -288,7 +292,7 @@ class MainWindow(QMainWindow):
             return
         self.language = lang
         theme.save_language(self._settings, lang)
-        self.settings_popup.sync(self.language, self.theme_name, self._auto_close)
+        self._sync_settings_popup()
         self.retranslate()
 
     def retranslate(self) -> None:
@@ -328,7 +332,7 @@ class MainWindow(QMainWindow):
             self._fullscreen.retranslate()
 
     def show_settings(self) -> None:
-        self.settings_popup.sync(self.language, self.theme_name, self._auto_close)
+        self._sync_settings_popup()
         self.settings_popup.popup_below(self.settings_button, align_right=True)
 
     def show_mode_info(self) -> None:
@@ -389,7 +393,7 @@ class MainWindow(QMainWindow):
         if self._fullscreen is not None:
             self._fullscreen.apply_theme(name)
         theme.save_theme_name(self._settings, name)
-        self.settings_popup.sync(self.language, self.theme_name, self._auto_close)
+        self._sync_settings_popup()
 
     # ------------------------------------------------------------------ auto-close setting
     def auto_close_enabled(self) -> bool:
@@ -400,7 +404,18 @@ class MainWindow(QMainWindow):
         theme.save_auto_close(self._settings, self._auto_close)
         if not self._auto_close:
             self._auto_close_timer.stop()          # switched off before it fired: stay open
-        self.settings_popup.sync(self.language, self.theme_name, self._auto_close)
+        self._sync_settings_popup()
+
+    def delete_source_enabled(self) -> bool:
+        return self._delete_source
+
+    def set_delete_source(self, enabled: bool) -> None:
+        self._delete_source = bool(enabled)
+        theme.save_delete_source(self._settings, self._delete_source)
+        self._sync_settings_popup()
+
+    def _sync_settings_popup(self) -> None:
+        self.settings_popup.sync(self.language, self.theme_name, self._auto_close, self._delete_source)
 
     def _auto_close_now(self) -> None:
         if self._auto_close and not self._busy:
@@ -424,9 +439,11 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ messages
     def _notify(self, kind: str, text: str) -> None:
-        """Show a modal message. ``kind`` is 'info' or 'error'."""
+        """Show a modal message. ``kind`` is 'info', 'warning' or 'error'."""
         if kind == "error":
             QMessageBox.critical(self, self.t("error_title"), text)
+        elif kind == "warning":
+            QMessageBox.warning(self, self.t("warning_title"), text)
         else:
             QMessageBox.information(self, self.t("info_title"), text)
 
@@ -453,6 +470,13 @@ class MainWindow(QMainWindow):
         urls = [u for u in event.mimeData().urls() if u.isLocalFile()]
         if urls:
             self.open_file(urls[0].toLocalFile())
+
+    def open_startup_path(self, path: str) -> None:
+        """Open the video given on the command line; a bad path is reported, the window stays."""
+        if not os.path.isfile(path):
+            self._error(self.t("file_not_found", path=path))
+            return
+        self.open_file(path)
 
     def open_file(self, path: str) -> None:
         if self._busy:
@@ -756,18 +780,78 @@ class MainWindow(QMainWindow):
             self._fs.show_toast(self.t("exporting", percent=percent), sticky=True)
 
     def _on_saved(self, paths, out_dir, expected: int | None = None) -> None:
-        count = len(list(paths))
+        paths = list(paths)
+        count = len(paths)
         self.progress_bar.setValue(100)
-        self._show_status("saved", count=count, folder=str(out_dir))
-        text = self.t("saved", count=count, folder=str(out_dir))
         full_success = expected is None or count == expected
-        closing = self._auto_close and full_success
+        src = self._src
+        trash_error = None
+        trashed = False
+        if full_success and self._delete_source and src and not self._is_output(src, paths):
+            trashed, trash_error = self._trash_source(src)
+        if trashed:
+            self._show_status("saved_trashed", count=count, folder=str(out_dir))
+            text = self.t("saved_trashed", count=count, folder=str(out_dir))
+        else:
+            self._show_status("saved", count=count, folder=str(out_dir))
+            text = self.t("saved", count=count, folder=str(out_dir))
+        closing = self._auto_close and full_success and trash_error is None
         if self.is_fullscreen() and self._fs is not None:
             self._fs.show_toast(text, duration_ms=max(int(self._fs.TOAST_MS), 1) * 2)
-        elif not closing:
-            self._notify("info", text)       # with auto-close the status bar is the message
+            if trash_error is not None:
+                self._fs.show_toast(self.t("trash_failed", error=trash_error),
+                                    duration_ms=max(int(self._fs.TOAST_MS), 1) * 3)
+        else:
+            if trash_error is not None:
+                self._notify("warning", self.t("trash_failed", error=trash_error))
+            elif not closing:
+                self._notify("info", text)       # with auto-close the status bar is the message
         if closing:
             self._auto_close_timer.start(max(int(self.AUTO_CLOSE_MS), 1))
+
+    @staticmethod
+    def _is_output(src: str, paths) -> bool:
+        def key(p):
+            try:
+                return os.path.normcase(os.path.realpath(str(p)))
+            except OSError:
+                return os.path.normcase(os.path.abspath(str(p)))
+        k = key(src)
+        return any(key(p) == k for p in paths)
+
+    def _trash_source(self, src: str):
+        """Release the preview, move ``src`` to the Recycle Bin, return to the no-video state.
+        Returns (moved, error_text)."""
+        self.player.release()
+        QApplication.processEvents()          # let the player really close the file first
+        try:
+            trash.move_to_trash(src)
+        except Exception as exc:              # noqa: BLE001 - any failure is only a warning
+            self.player.set_source(src)       # give the preview back: nothing was lost
+            return False, str(exc) or exc.__class__.__name__
+        if self.is_fullscreen():
+            self.exit_fullscreen()            # nothing left to show full screen
+        self._unload_video()
+        return True, None
+
+    def _unload_video(self) -> None:
+        """Back to the state right after start: no video, no segments."""
+        self._src, self._duration = None, 0.0
+        self._segments = []
+        self.segment_list.setCurrentRow(-1)
+        self._syncing = True
+        try:
+            self.range_slider.setMaximum(1.0)
+            self.range_slider.setValues(0.0, 1.0)
+            self.start_edit.setText(format_time(0.0))
+            self.end_edit.setText(format_time(0.0))
+        finally:
+            self._syncing = False
+        self.position_slider.setRange(0, 0)
+        self._show_time(0)
+        self._refresh_segment_items(select=-1)
+        self._update_edit_note()
+        self._update_enabled()
 
     # ------------------------------------------------------------------ threading
     def _run(self, fn, on_result, on_error, on_progress=None) -> None:

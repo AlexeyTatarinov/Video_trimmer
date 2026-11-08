@@ -498,3 +498,14 @@ def paint_icon(p: QPainter, kind: str, rect: QRectF, color: QColor, muted: bool 
         path.closeSubpath()
         p.drawPath(path)
     p.restore()
+
+
+def load_delete_source(settings) -> bool:
+    """"Move the original to the Recycle Bin after a successful export" (default ON)."""
+    value = settings.value("delete_source_after_export", True)
+    return value if isinstance(value, bool) else str(value).strip().lower() in ("true", "1", "yes")
+
+
+def save_delete_source(settings, enabled: bool) -> None:
+    settings.setValue("delete_source_after_export", bool(enabled))
+    settings.sync()

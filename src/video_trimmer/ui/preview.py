@@ -219,3 +219,11 @@ class PreviewPlayer(QObject):
     def stop(self) -> None:
         if self._player:
             self._player.stop()
+
+    def release(self) -> None:
+        """Let go of the video file (so that it can be moved or deleted)."""
+        self._pending = None
+        self._seek_timer.stop()
+        if self._player:
+            self._player.stop()
+            self._player.setSource(QUrl())

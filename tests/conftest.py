@@ -101,3 +101,13 @@ def _ensure_src_on_path(monkeypatch):
     import sys
     if SRC_DIR not in sys.path:
         monkeypatch.syspath_prepend(SRC_DIR)
+
+
+@pytest.fixture(autouse=True)
+def _never_touch_the_real_trash(monkeypatch):
+    """Safety net: no test may ever move a file to the real Recycle Bin."""
+    from video_trimmer import trash
+
+    def forbidden(path):
+        raise AssertionError(f"a test tried to use the real trash for {path}")
+    monkeypatch.setattr(trash, "move_to_trash", forbidden)
