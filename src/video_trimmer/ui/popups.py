@@ -16,6 +16,7 @@ class SettingsPopup(GlassPopup):
     languageChosen = Signal(str)
     themeChosen = Signal(str)
     autoCloseChanged = Signal(bool)
+    deleteSourceChanged = Signal(bool)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -59,6 +60,9 @@ class SettingsPopup(GlassPopup):
         self.auto_close_check = GlassCheckBox()
         self.auto_close_check.toggled.connect(self.autoCloseChanged)
         self.body.addWidget(self.auto_close_check)
+        self.delete_source_check = GlassCheckBox()
+        self.delete_source_check.toggled.connect(self.deleteSourceChanged)
+        self.body.addWidget(self.delete_source_check)
 
     def retranslate(self, lang: str) -> None:
         self.language_label.setText(i18n.tr(lang, "language").upper())
@@ -67,13 +71,20 @@ class SettingsPopup(GlassPopup):
             b.setText(i18n.tr(lang, f"theme_{name}"))
         self.auto_close_check.setText(i18n.tr(lang, "auto_close_after_export"))
         self.auto_close_check.update()
+        self.delete_source_check.setText(i18n.tr(lang, "delete_source_after_export"))
+        self.delete_source_check.update()
 
-    def sync(self, language: str, theme_name: str, auto_close: bool | None = None) -> None:
+    def sync(self, language: str, theme_name: str, auto_close: bool | None = None,
+             delete_source: bool | None = None) -> None:
         """Show the current choices (no signals)."""
         if auto_close is not None:
             self.auto_close_check.blockSignals(True)
             self.auto_close_check.setChecked(bool(auto_close))
             self.auto_close_check.blockSignals(False)
+        if delete_source is not None:
+            self.delete_source_check.blockSignals(True)
+            self.delete_source_check.setChecked(bool(delete_source))
+            self.delete_source_check.blockSignals(False)
         for code, b in self.language_buttons.items():
             b.setChecked(code == language)
         for name, b in self.theme_buttons.items():

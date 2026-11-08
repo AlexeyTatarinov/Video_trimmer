@@ -1,8 +1,8 @@
 [project]
 name = "video-trimmer"
-version = "0.1.0"
+version = "0.3.0"
 requires-python = ">=3.10"
-dependencies = ["PySide6-Essentials", "PySide6-Addons"]
+dependencies = ["PySide6-Essentials", "PySide6-Addons", "send2trash"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
