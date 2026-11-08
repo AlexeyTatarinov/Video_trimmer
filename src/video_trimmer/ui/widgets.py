@@ -7,7 +7,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
-    QAbstractButton, QComboBox, QFrame, QLabel, QPushButton, QSizePolicy, QSlider, QVBoxLayout,
+    QAbstractButton, QCheckBox, QComboBox, QFrame, QLabel, QPushButton, QSizePolicy, QSlider, QVBoxLayout,
     QWidget,
 )
 
@@ -94,6 +94,9 @@ class ElidedLabel(QLabel):
             self._show_elided()
 
 
+PANEL_RADIUS = 22.0   # corner radius of the glass panels (the video area is clipped to the same)
+
+
 class GlassPanel(QFrame):
     """Translucent rounded panel with an optional small caption and a ``body`` layout."""
 
@@ -121,7 +124,7 @@ class GlassPanel(QFrame):
 
     def paintEvent(self, event) -> None:  # noqa: N802
         p = QPainter(self)
-        paint_glass(p, QRectF(self.rect()).adjusted(1, 1, -1, -1), theme.current(), 22.0)
+        paint_glass(p, QRectF(self.rect()).adjusted(1, 1, -1, -1), theme.current(), PANEL_RADIUS)
 
 
 class GlassButton(QPushButton):
@@ -491,6 +494,53 @@ class StatusProgressBar(QWidget):
         p.setPen(th.text)
         text = QFontMetrics(font).elidedText(self._text, Qt.ElideRight, max(int(r.width()) - 24, 10))
         p.drawText(r, Qt.AlignCenter, text)
+
+
+class GlassCheckBox(QCheckBox):
+    """Check box painted in the glass style; its text wraps in a fixed-size box (two lines)."""
+
+    BOX = 20
+    GAP = 10
+    LINES = 2
+
+    def __init__(self, text: str = "", width: int = 320, parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setFixedSize(width, 2 * 6 + self.LINES * QFontMetrics(self.font()).lineSpacing() + 2)
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return self.size()
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return self.size()
+
+    def _text_rect(self) -> QRectF:
+        x = self.BOX + self.GAP
+        return QRectF(x, 0, self.width() - x, self.height())
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        th = theme.current()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        box = QRectF(1.5, (self.height() - self.BOX) / 2, self.BOX - 3, self.BOX - 3)
+        p.setPen(QPen(th.accent if self.isChecked() or self.hasFocus() else th.input_border, 1.4))
+        p.setBrush(th.accent if self.isChecked() else th.input_bg)
+        p.drawRoundedRect(box, 6, 6)
+        if self.isChecked():
+            pen = QPen(QColor(255, 255, 255), 2.2)
+            pen.setCapStyle(Qt.RoundCap)
+            pen.setJoinStyle(Qt.RoundJoin)
+            p.setPen(pen)
+            p.setBrush(Qt.NoBrush)
+            c = box.center()
+            p.drawPolyline([QPointF(c.x() - 4.2, c.y() + 0.2), QPointF(c.x() - 1.2, c.y() + 3.2),
+                            QPointF(c.x() + 4.4, c.y() - 3.2)])
+        p.setPen(th.text)
+        p.drawText(self._text_rect(), int(Qt.AlignVCenter | Qt.AlignLeft | Qt.TextWordWrap), self.text())
+
+    def hitButton(self, pos) -> bool:  # noqa: N802
+        return self.rect().contains(pos)
 
 
 class GlassPopup(QFrame):

@@ -60,6 +60,10 @@ STRINGS: dict[str, dict[str, str]] = {
         "empty_segment": "The range is empty: move the handles apart.",
         "segments_empty": "No segments yet: set the range and press Add.",
         "exit_fullscreen": "Exit full screen",
+        "export": "Export",
+        "exporting": "Exporting... {percent}%",
+        "closing_soon": "Closing the program...",
+        "auto_close_after_export": "Close the program automatically after export",
         "fullscreen_tip": "Double-click the video for full screen",
     },
     "ru": {
@@ -117,6 +121,10 @@ STRINGS: dict[str, dict[str, str]] = {
         "empty_segment": "Границы совпадают: раздвиньте ручки.",
         "segments_empty": "Фрагментов пока нет: выберите границы и нажмите «Добавить».",
         "exit_fullscreen": "Выйти из полного экрана",
+        "export": "Экспорт",
+        "exporting": "Экспорт... {percent}%",
+        "closing_soon": "Закрываю программу...",
+        "auto_close_after_export": "Закрывать программу автоматически после экспорта",
         "fullscreen_tip": "Двойной щелчок по видео: полный экран",
     },
     "uk": {
@@ -174,6 +182,10 @@ STRINGS: dict[str, dict[str, str]] = {
         "empty_segment": "Межі збігаються: розсуньте повзунки.",
         "segments_empty": "Фрагментів поки немає: виберіть межі й натисніть «Додати».",
         "exit_fullscreen": "Вийти з повного екрана",
+        "export": "Експорт",
+        "exporting": "Експорт... {percent}%",
+        "closing_soon": "Закриваю програму...",
+        "auto_close_after_export": "Закривати програму автоматично після експорту",
         "fullscreen_tip": "Подвійний клік по відео: повний екран",
     },
 }

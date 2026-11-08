@@ -18,7 +18,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor, QImage, QLinearGradient, QPainter
 from PySide6.QtMultimedia import QVideoSink
 from PySide6.QtWidgets import (
-    QApplication, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QLineEdit, QSizePolicy, QWidget,
+    QApplication, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QSizePolicy, QWidget,
 )
 
 from video_trimmer import i18n
@@ -55,7 +55,8 @@ class _Opaque(QWidget):
 
 
 class FullscreenHeader(_Opaque):
-    """Slides in from the top edge. Holds ONE round cross button in the centre."""
+    """Slides in from the top edge: the round cross button stays in the exact centre; the
+    "Export" button sits to the right of it (v0.2.4)."""
 
     HEIGHT = 84
     BUTTON = 56
@@ -64,11 +65,22 @@ class FullscreenHeader(_Opaque):
         super().__init__(parent)
         self.exit_button = GlassButton(icon_kind="cross", diameter=self.BUTTON)
         self.exit_button.setFocusPolicy(Qt.NoFocus)
-        lay = QHBoxLayout(self)
+        self.export_button = GlassButton(primary=True)
+        self.export_button.setFocusPolicy(Qt.NoFocus)
+        self.export_button.set_texts(i18n.all_texts("export"))
+        # three columns; the two outer ones stretch equally, so the cross is always centred
+        lay = QGridLayout(self)
         lay.setContentsMargins(0, 12, 0, 16)
-        lay.addStretch(1)
-        lay.addWidget(self.exit_button)
-        lay.addStretch(1)
+        lay.setHorizontalSpacing(0)
+        lay.setColumnStretch(0, 1)
+        lay.setColumnStretch(2, 1)
+        right = QHBoxLayout()
+        right.setContentsMargins(0, 0, 0, 0)
+        right.addSpacing(20)
+        right.addWidget(self.export_button)
+        right.addStretch(1)
+        lay.addWidget(self.exit_button, 0, 1, Qt.AlignCenter)
+        lay.addLayout(right, 0, 2)
         self.hide()
 
     def paintEvent(self, event) -> None:  # noqa: N802
@@ -196,6 +208,21 @@ class Toast(QLabel):
         self.setGraphicsEffect(self._effect)
         self.hide()
 
+    def fit_text(self, text: str, max_width: int) -> None:
+        """Set the text; a text wider than ``max_width`` wraps instead of leaving the screen."""
+        self.setText(text)
+        self.setWordWrap(False)
+        self.setMinimumWidth(0)
+        self.setMaximumWidth(16777215)
+        self.adjustSize()
+        if self.width() > max_width:
+            self.setWordWrap(True)
+            self.setFixedWidth(max_width)
+            self.setFixedHeight(self.heightForWidth(max_width))
+        else:
+            self.setMinimumHeight(0)
+            self.setMaximumHeight(16777215)
+
     def paintEvent(self, event) -> None:  # noqa: N802
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
@@ -227,6 +254,7 @@ class FullscreenWindow(QWidget):
     exitRequested = Signal()
     toggleRequested = Signal()      # a double click on the picture
     playToggleRequested = Signal()  # Space
+    exportRequested = Signal()      # the "Export" button of the header (v0.2.4)
 
     def __init__(self, owner: QWidget) -> None:
         super().__init__(owner, Qt.Window | Qt.FramelessWindowHint)
@@ -248,6 +276,9 @@ class FullscreenWindow(QWidget):
         self.header = FullscreenHeader(self)
         self.exit_button = self.header.exit_button
         self.exit_button.clicked.connect(self.exitRequested)
+        self.export_button = self.header.export_button
+        self.export_button.clicked.connect(self.exportRequested)
+        self._export_active = False
         self.footer = FullscreenFooter(self)
         self.toast = Toast(self)
 
@@ -385,8 +416,9 @@ class FullscreenWindow(QWidget):
         """True while the pointer rests on the usable part of a shown panel (it then stays open)."""
         if not self._shown[key]:
             return False
-        if key == "header":     # the strip is only a scrim: just the cross button counts
+        if key == "header":     # the strip is only a scrim: just the two buttons count
             r = QRect(self.exit_button.mapTo(self, QPoint(0, 0)), self.exit_button.size())
+            r = r.united(QRect(self.export_button.mapTo(self, QPoint(0, 0)), self.export_button.size()))
         else:
             r = self.footer.geometry()
         return r.contains(self._last_pos)
@@ -415,7 +447,7 @@ class FullscreenWindow(QWidget):
             if not self._shown[key]:
                 continue
             busy = key == "footer" and self.footer.is_interacting()
-            if self._panel_has_mouse(key) or busy:
+            if self._panel_has_mouse(key) or busy or self._export_active:
                 keep = True
             else:
                 self._set_panel(key, False)
@@ -447,19 +479,31 @@ class FullscreenWindow(QWidget):
         return False
 
     # ------------------------------------------------------------------ toast
-    def show_toast(self, text: str) -> None:
+    def show_toast(self, text: str, sticky: bool = False, duration_ms: int | None = None) -> None:
+        """Show a notice. ``sticky`` keeps it until the next toast (export progress)."""
         self._toast_anim.stop()
+        self._toast_timer.stop()
         self.toast._effect.setOpacity(1.0)
-        self.toast.setText(text)
-        self.toast.adjustSize()
+        self.toast.fit_text(text, max(self.width() - 2 * self.SIDE_MARGIN, 200))
         self._place_toast()
         self.toast.show()
         self.toast.raise_()
-        self._toast_timer.start(max(int(self.TOAST_MS), 1))
+        if not sticky:
+            ms = self.TOAST_MS if duration_ms is None else duration_ms
+            self._toast_timer.start(max(int(ms), 1))
+
+    def set_export_active(self, active: bool) -> None:
+        """While an export runs the panels stay open and the header is shown."""
+        self._export_active = bool(active)
+        if active and self._active:
+            self.show_panels(header=True, footer=False)
+        elif not active:
+            self._restart_hide_timer()
 
     def _place_toast(self) -> None:
         t = self.toast
-        t.adjustSize()
+        if not t.wordWrap():
+            t.adjustSize()
         t.move((self.width() - t.width()) // 2, self.HEADER_ZONE + 24)
 
     def _fade_toast(self) -> None:
@@ -553,6 +597,7 @@ class FullscreenController(QObject):
         f = w.footer
         w.exitRequested.connect(mw.exit_fullscreen)
         w.toggleRequested.connect(mw.toggle_fullscreen)
+        w.exportRequested.connect(mw.save)
         w.playToggleRequested.connect(lambda: mw.toggle_play())
         # transport
         f.play_button.clicked.connect(lambda: mw.toggle_play())
@@ -584,6 +629,8 @@ class FullscreenController(QObject):
         self.sync_all()
         self.active = True
         w.begin(mw.screen())
+        if mw.is_exporting():
+            w.set_export_active(True)
         mw.player.set_video_sink(w.sink)
         mw.player.refresh_frame()
 
@@ -637,6 +684,13 @@ class FullscreenController(QObject):
                              (f.end_edit, mw.end_edit), (f.set_start_button, mw.set_start_button),
                              (f.set_end_button, mw.set_end_button), (f.add_button, mw.add_button)):
             mine.setEnabled(theirs.isEnabled())
+        self.window.export_button.setEnabled(mw.save_button.isEnabled())
+        tip = ""
+        if mw.is_busy():
+            tip = mw.t("saving")
+        elif not mw.segments():
+            tip = mw.t("save_disabled_tip")
+        self.window.export_button.setToolTip(tip)
 
     def retranslate(self) -> None:
         if self.window is None:
@@ -653,6 +707,7 @@ class FullscreenController(QObject):
         f.mute_button.setToolTip(mw.mute_button.toolTip())
         f.volume_slider.setToolTip(mw.t("volume"))
         self.window.exit_button.setToolTip(mw.t("exit_fullscreen"))
+        self.window.export_button.setText(mw.t("export"))
         self.window.setWindowTitle(mw.t("window_title"))
         self._mirror_play()
 

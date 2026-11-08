@@ -172,3 +172,27 @@ trim_each(src, ranges, out_dir, mode="fast", progress=None) -> list[Path]
 - Тесты полного экрана (в offscreen экран маленький, проверять логику и геометрию относительно экрана): двойной щелчок входит и выходит; Esc выходит; крестик в шапке по центру выходит и не закрывает окно; шапка и подвал появляются по движению мыши в зонах и скрываются; подвал содержит нужные элементы и не содержит запрещённых; громкость и позиция синхронны; «Добавить» в полном экране создаёт карточку и показывает уведомление; состояние сохраняется при входе и выходе.
 - Проверка на реальном ролике: после входа в полноэкранный режим кадры приходят в виджет (QVideoSink), при перетаскивании ручки в подвале приходит кадр нужного момента; после выхода предпросмотр снова получает кадры.
 - Снимки полноэкранного окна с видимыми шапкой и подвалом (светлая и тёмная темы, 3 языка по одному) просмотрены.
+
+---
+
+# Version 0.2.4 — rounded video frame, export from fullscreen, auto-close after export (owner feedback)
+
+## A. Rounded video frame
+The black video area in the main window has sharp corners while the glass panel behind it is rounded (owner screenshot, red squares at the four corners). The video area must be clipped with the same corner radius as the panel (no black square corners visible, both themes, any window size, also while playing and after resize). Fullscreen stays edge-to-edge (no rounding).
+
+## B. Export button in the fullscreen header
+1. The header gets an "Export" button next to the centred exit cross; the cross stays centred and still only leaves fullscreen.
+2. It runs the same export as the main Save button (current mode fast/precise, current cards, same output folder rules). Disabled (with tooltip) while there are no cards or while an export is running.
+3. Progress and result are shown in fullscreen as a toast/progress strip (en/ru/uk); errors are shown, never swallowed.
+4. Panels must not hide while an export runs and the pointer is over them.
+
+## C. Setting "Close the program automatically after export"
+1. A checkbox in the settings popup (gear), **default OFF**, persisted in QSettings like theme and language. Texts in en/ru/uk with identical keys.
+2. When ON, after a fully successful export (all files written) the program closes by itself, from normal mode and from fullscreen; show a short message first (about 1.5 s) so the owner sees the result. On any error the program stays open.
+3. Closing must not lose the setting or leave worker threads/ffmpeg processes running.
+
+## Done criteria v0.2.4
+- Tests first, then code; all tests green and actually run (core, CLI, UI, layout, cards, fullscreen).
+- Tests: video widget mask/clip radius equals panel radius and survives resize and theme change; header has export + cross, cross still centred and only exits fullscreen; export from fullscreen calls the same path as Save with the same segments; disabled with no cards/while busy; checkbox default off, persisted, translated; auto-close fires only after full success and only when ON (use a fake/short export), never on error.
+- Real-core end-to-end through the window in both modes, including auto-close ON.
+- Screenshots viewed: main window with rounded video (light + dark), fullscreen header with export button, settings popup with the checkbox (3 languages).

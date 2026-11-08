@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QSize, Qt, Signal, Slot
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractSlider, QApplication, QButtonGroup, QFileDialog, QFrame, QHBoxLayout, QLineEdit, QMainWindow,
@@ -36,6 +36,7 @@ class MainWindow(QMainWindow):
     _gui_call = Signal(object)
     displayTimeChanged = Signal(int)   # ms shown by the position slider / label (also while paused)
     segmentCreated = Signal(int)       # number (1-based) of the card that "Add" has just created
+    AUTO_CLOSE_MS = 1500               # how long the result stays visible before auto-close
 
     def __init__(self, language: str | None = None, settings=None) -> None:
         super().__init__()
@@ -50,6 +51,11 @@ class MainWindow(QMainWindow):
         self._segments: list[tuple[float, float]] = []
         self._syncing = False
         self._busy = False
+        self._exporting = False
+        self._auto_close = theme.load_auto_close(self._settings)
+        self._auto_close_timer = QTimer(self)
+        self._auto_close_timer.setSingleShot(True)
+        self._auto_close_timer.timeout.connect(self._auto_close_now)
         self._external_drag = False   # a range handle is being dragged in the full-screen footer
         self._fullscreen = None
         self._thread = None
@@ -67,7 +73,7 @@ class MainWindow(QMainWindow):
         self.retranslate()
         self._update_enabled()
         theme.apply_theme(self, self.theme_name)
-        self.settings_popup.sync(self.language, self.theme_name)
+        self.settings_popup.sync(self.language, self.theme_name, self._auto_close)
 
     # ------------------------------------------------------------------ build
     def _build_ui(self) -> None:
@@ -101,6 +107,7 @@ class MainWindow(QMainWindow):
         self.settings_popup = SettingsPopup(self)
         self.settings_popup.languageChosen.connect(self.set_language)
         self.settings_popup.themeChosen.connect(self.set_theme)
+        self.settings_popup.autoCloseChanged.connect(self.set_auto_close)
         header.addWidget(self.title_label)
         header.addStretch(1)
         header.addWidget(self.open_button)
@@ -279,7 +286,7 @@ class MainWindow(QMainWindow):
             return
         self.language = lang
         theme.save_language(self._settings, lang)
-        self.settings_popup.sync(self.language, self.theme_name)
+        self.settings_popup.sync(self.language, self.theme_name, self._auto_close)
         self.retranslate()
 
     def retranslate(self) -> None:
@@ -319,7 +326,7 @@ class MainWindow(QMainWindow):
             self._fullscreen.retranslate()
 
     def show_settings(self) -> None:
-        self.settings_popup.sync(self.language, self.theme_name)
+        self.settings_popup.sync(self.language, self.theme_name, self._auto_close)
         self.settings_popup.popup_below(self.settings_button, align_right=True)
 
     def show_mode_info(self) -> None:
@@ -333,6 +340,9 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ state
     def is_busy(self) -> bool:
         return self._busy
+
+    def is_exporting(self) -> bool:
+        return self._exporting
 
     def has_video(self) -> bool:
         return self._src is not None and self._duration > 0
@@ -377,7 +387,22 @@ class MainWindow(QMainWindow):
         if self._fullscreen is not None:
             self._fullscreen.apply_theme(name)
         theme.save_theme_name(self._settings, name)
-        self.settings_popup.sync(self.language, self.theme_name)
+        self.settings_popup.sync(self.language, self.theme_name, self._auto_close)
+
+    # ------------------------------------------------------------------ auto-close setting
+    def auto_close_enabled(self) -> bool:
+        return self._auto_close
+
+    def set_auto_close(self, enabled: bool) -> None:
+        self._auto_close = bool(enabled)
+        theme.save_auto_close(self._settings, self._auto_close)
+        if not self._auto_close:
+            self._auto_close_timer.stop()          # switched off before it fired: stay open
+        self.settings_popup.sync(self.language, self.theme_name, self._auto_close)
+
+    def _auto_close_now(self) -> None:
+        if self._auto_close and not self._busy:
+            self.close()
 
     def toggle_theme(self) -> None:
         self.set_theme("dark" if self.theme_name == "light" else "light")
@@ -405,6 +430,10 @@ class MainWindow(QMainWindow):
 
     def _error(self, text: str) -> None:
         self.progress_bar.setText(text)
+        if self.is_fullscreen() and self._fs is not None:
+            # a modal box would hide behind the full-screen window: show the error on top of it
+            self._fs.show_toast(text, duration_ms=max(int(self._fs.TOAST_MS), 1) * 3)
+            return
         self._notify("error", text)
 
     # ------------------------------------------------------------------ file open
@@ -426,6 +455,7 @@ class MainWindow(QMainWindow):
     def open_file(self, path: str) -> None:
         if self._busy:
             return
+        self._auto_close_timer.stop()
         path = str(path)
         self._show_status("loading")
         self._run(lambda _p: core.probe(path),
@@ -688,7 +718,8 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ saving
     def _ask_save_dir(self, default: Path) -> str:
-        return QFileDialog.getExistingDirectory(self, self.t("save_dialog_title"), str(default))
+        parent = self._fs if self.is_fullscreen() and self._fs is not None else self
+        return QFileDialog.getExistingDirectory(parent, self.t("save_dialog_title"), str(default))
 
     def save(self) -> None:
         if self._busy or not self.has_video() or not self._segments:
@@ -702,19 +733,39 @@ class MainWindow(QMainWindow):
         out_dir = self._ask_save_dir(Path(src).parent)
         if not out_dir:
             return
+        self._auto_close_timer.stop()
         self.progress_bar.setValue(0)
         self._show_status("saving")
+        self._exporting = True
+        if self._fs is not None and self.is_fullscreen():
+            self._fs.set_export_active(True)
+            self._fs.show_toast(self.t("exporting", percent=0), sticky=True)
         self._run(
             lambda progress: core.trim_each(src, ranges, out_dir, mode, progress),
-            on_result=lambda paths: self._on_saved(paths, out_dir),
+            on_result=lambda paths: self._on_saved(paths, out_dir, len(ranges)),
             on_error=self._error,
-            on_progress=lambda v: self.progress_bar.setValue(int(round(min(max(v, 0.0), 1.0) * 100))),
+            on_progress=self._on_save_progress,
         )
 
-    def _on_saved(self, paths, out_dir) -> None:
+    def _on_save_progress(self, v: float) -> None:
+        percent = int(round(min(max(v, 0.0), 1.0) * 100))
+        self.progress_bar.setValue(percent)
+        if self.is_fullscreen() and self._fs is not None:
+            self._fs.show_toast(self.t("exporting", percent=percent), sticky=True)
+
+    def _on_saved(self, paths, out_dir, expected: int | None = None) -> None:
+        count = len(list(paths))
         self.progress_bar.setValue(100)
-        self._show_status("saved", count=len(list(paths)), folder=str(out_dir))
-        self._notify("info", self.t("saved", count=len(list(paths)), folder=str(out_dir)))
+        self._show_status("saved", count=count, folder=str(out_dir))
+        text = self.t("saved", count=count, folder=str(out_dir))
+        full_success = expected is None or count == expected
+        closing = self._auto_close and full_success
+        if self.is_fullscreen() and self._fs is not None:
+            self._fs.show_toast(text, duration_ms=max(int(self._fs.TOAST_MS), 1) * 2)
+        elif not closing:
+            self._notify("info", text)       # with auto-close the status bar is the message
+        if closing:
+            self._auto_close_timer.start(max(int(self.AUTO_CLOSE_MS), 1))
 
     # ------------------------------------------------------------------ threading
     def _run(self, fn, on_result, on_error, on_progress=None) -> None:
@@ -735,9 +786,14 @@ class MainWindow(QMainWindow):
 
     def _on_thread_finished(self) -> None:
         self._busy = False
+        if self._exporting:
+            self._exporting = False
+            if self._fs is not None:
+                self._fs.set_export_active(False)
         self._update_enabled()
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        self._auto_close_timer.stop()
         if self._fullscreen is not None:
             self._fullscreen.shutdown()      # never leave a full-screen window behind
         self.player.stop()

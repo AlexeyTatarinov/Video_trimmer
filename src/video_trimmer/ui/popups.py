@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QButtonGroup, QHBoxLayout, QLabel
 
 from video_trimmer import i18n
-from video_trimmer.ui.widgets import ElidedLabel, GlassButton, GlassPopup
+from video_trimmer.ui.widgets import ElidedLabel, GlassButton, GlassCheckBox, GlassPopup
 
 THEME_ORDER = ("light", "dark")
 
@@ -15,6 +15,7 @@ class SettingsPopup(GlassPopup):
 
     languageChosen = Signal(str)
     themeChosen = Signal(str)
+    autoCloseChanged = Signal(bool)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -54,15 +55,25 @@ class SettingsPopup(GlassPopup):
         self.body.addSpacing(4)
         self.body.addWidget(self.theme_label)
         self.body.addLayout(theme_row)
+        self.body.addSpacing(4)
+        self.auto_close_check = GlassCheckBox()
+        self.auto_close_check.toggled.connect(self.autoCloseChanged)
+        self.body.addWidget(self.auto_close_check)
 
     def retranslate(self, lang: str) -> None:
         self.language_label.setText(i18n.tr(lang, "language").upper())
         self.theme_label.setText(i18n.tr(lang, "theme").upper())
         for name, b in self.theme_buttons.items():
             b.setText(i18n.tr(lang, f"theme_{name}"))
+        self.auto_close_check.setText(i18n.tr(lang, "auto_close_after_export"))
+        self.auto_close_check.update()
 
-    def sync(self, language: str, theme_name: str) -> None:
+    def sync(self, language: str, theme_name: str, auto_close: bool | None = None) -> None:
         """Show the current choices (no signals)."""
+        if auto_close is not None:
+            self.auto_close_check.blockSignals(True)
+            self.auto_close_check.setChecked(bool(auto_close))
+            self.auto_close_check.blockSignals(False)
         for code, b in self.language_buttons.items():
             b.setChecked(code == language)
         for name, b in self.theme_buttons.items():
