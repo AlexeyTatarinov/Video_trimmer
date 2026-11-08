@@ -104,10 +104,10 @@ jobs:
           $ErrorActionPreference = 'Stop'
           # Remove ffmpeg from PATH for this step so the bundled copy is what gets tested.
           $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -ne $env:FFMPEG_STAGE }) -join ';'
-          $p = Start-Process -FilePath (Join-Path $PWD 'dist/VideoTrimmer/VideoTrimmer.exe') -ArgumentList '--selftest' -Wait -PassThru -NoNewWindow -RedirectStandardOutput selftest.out -RedirectStandardError selftest.err
-          Get-Content selftest.out, selftest.err -ErrorAction SilentlyContinue
+          $p = Start-Process -FilePath (Join-Path $PWD 'dist/VideoTrimmer/VideoTrimmer.exe') -ArgumentList @('--selftest', '--selftest-out', "$PWD\selftest.out") -Wait -PassThru
+          if (Test-Path selftest.out) { Get-Content selftest.out }
           if ($p.ExitCode -ne 0) { throw "selftest exit code $($p.ExitCode)" }
-          if (-not ((Get-Content selftest.out -Raw) -match 'SELFTEST OK')) { throw "SELFTEST OK not printed" }
+          if (-not (Test-Path selftest.out) -or -not ((Get-Content selftest.out -Raw) -match 'SELFTEST OK')) { throw "SELFTEST OK not written" }
 
       - name: Locate Inno Setup compiler
         run: |
@@ -187,9 +187,10 @@ jobs:
           Write-Host "Install checks passed."
 
           # ---- the installed exe works ----
-          $t = Start-Process -FilePath $exe -ArgumentList '--selftest' -Wait -PassThru -NoNewWindow -RedirectStandardOutput "$env:RUNNER_TEMP\st.out" -RedirectStandardError "$env:RUNNER_TEMP\st.err"
-          Get-Content "$env:RUNNER_TEMP\st.out", "$env:RUNNER_TEMP\st.err" -ErrorAction SilentlyContinue
+          $t = Start-Process -FilePath $exe -ArgumentList @('--selftest', '--selftest-out', "$env:RUNNER_TEMP\st.out") -Wait -PassThru
+          if (Test-Path "$env:RUNNER_TEMP\st.out") { Get-Content "$env:RUNNER_TEMP\st.out" }
           if ($t.ExitCode -ne 0) { throw "installed selftest exit code $($t.ExitCode)" }
+          if (-not ((Get-Content "$env:RUNNER_TEMP\st.out" -Raw) -match 'SELFTEST OK')) { throw "installed SELFTEST OK not written" }
 
           # ---- uninstall ----
           $u = Start-Process -FilePath (Join-Path $dir 'unins000.exe') -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru
