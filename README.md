@@ -4,6 +4,8 @@
 
 Big video editors come with a huge feature set, and every job starts as a project: you import media, build a timeline, learn where things are and why they behave the way they do. That is far too much when all you need is to cut a piece out of a short video. Video Trimmer was made for exactly that case: right-click a video, pick the parts you want to keep, save, done. No projects, no timeline, no effects, nothing to learn.
 
+Created by [Oleksii Tatarinov](https://github.com/AlexeyTatarinov).
+
 ## Features
 
 - **Open a video** with a button, by double-clicking it from the "Open with" menu, or straight from the right-click menu of any common video format (see [Installation](#installation)).

@@ -18,13 +18,13 @@ EXE = ".exe" if IS_WIN else ""
 
 
 # ---------------------------------------------------------------- version (single source)
-def test_version_is_0_3_0():
-    assert video_trimmer.__version__ == "0.3.0"
+def test_version_is_0_3_1():
+    assert video_trimmer.__version__ == "0.3.1"
 
 
 def test_pyproject_version_is_in_sync():
     text = (Path(__file__).resolve().parent.parent / "pyproject.toml").read_text(encoding="utf-8")
-    assert re.search(r'^version\s*=\s*"0\.3\.0"\s*$', text, re.M)
+    assert re.search(r'^version\s*=\s*"0\.3\.1"\s*$', text, re.M)
 
 
 def test_send2trash_is_a_declared_dependency():
@@ -180,3 +180,13 @@ def test_main_opens_path_after_show(monkeypatch, tmp_path):
     seen.clear()
     assert entry.main([]) == 0
     assert seen == []
+
+
+def test_authorship_mark_present():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    for rel in ("installer/VideoTrimmer.iss", "packaging/version_info.txt", "README.md", "THIRD_PARTY_NOTICES.md", "LICENSE"):
+        text = (root / rel).read_text(encoding="utf-8")
+        assert "Oleksii Tatarinov" in text, rel
+    assert "github.com/AlexeyTatarinov" in (root / "installer/VideoTrimmer.iss").read_text(encoding="utf-8")
+    assert "github.com/AlexeyTatarinov" in (root / "README.md").read_text(encoding="utf-8")

@@ -1,5 +1,5 @@
 ; Inno Setup script for Video Trimmer. Build (from the repository root):
-;   iscc /DAppVersion=0.3.0 installer\VideoTrimmer.iss
+;   iscc /DAppVersion=0.3.1 installer\VideoTrimmer.iss
 ; Expects the PyInstaller output (with the ffmpeg\ folder) in dist\VideoTrimmer.
 ; Output: installer-out\VideoTrimmer-Setup-<version>.exe
 
@@ -16,7 +16,14 @@
 AppId={{6B0E8E57-3C41-4D0E-9B6B-7A1F6C2D9A34}
 AppName={#AppName}
 AppVersion={#AppVersion}
-AppPublisher=Video Trimmer
+AppPublisher=Oleksii Tatarinov
+AppPublisherURL=https://github.com/AlexeyTatarinov
+AppSupportURL=https://github.com/AlexeyTatarinov/Video_trimmer
+AppCopyright=Copyright (c) 2026 Oleksii Tatarinov
+VersionInfoVersion={#AppVersion}.0
+VersionInfoCompany=Oleksii Tatarinov
+VersionInfoProductName=Video Trimmer
+VersionInfoDescription=Video Trimmer setup
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes

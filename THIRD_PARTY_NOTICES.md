@@ -1,5 +1,7 @@
 # Third-party notices
 
+Video Trimmer is created by Oleksii Tatarinov (https://github.com/AlexeyTatarinov).
+
 Video Trimmer (see `LICENSE` for its own license) uses and redistributes the
 components below. The Windows installer bundles Python, Qt/PySide6 and an
 ffmpeg build.
