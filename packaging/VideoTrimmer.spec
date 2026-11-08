@@ -72,6 +72,7 @@ exe = EXE(  # noqa: F821
     upx=False,
     console=False,  # windowed
     icon=str(ICON),
+    version=str(ROOT / "packaging" / "version_info.txt"),
 )
 
 coll = COLLECT(  # noqa: F821
