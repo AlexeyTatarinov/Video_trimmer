@@ -43,13 +43,42 @@ rem ---- ffmpeg: system one, or a local copy in tools\ffmpeg ----
 where ffmpeg >nul 2>nul
 if not errorlevel 1 goto ffmpeg_ok
 if exist "tools\ffmpeg\bin\ffmpeg.exe" goto ffmpeg_local
-echo ffmpeg was not found. Downloading a local copy, about 100 MB, please wait...
+echo ffmpeg was not found. Downloading a local copy, about 150 MB.
+echo A progress line is shown below. If a source is too slow, the next one is tried.
 if not exist "tools" mkdir "tools"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $ProgressPreference='SilentlyContinue'; Invoke-WebRequest -Uri 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip' -OutFile 'tools\ffmpeg.zip'; if (Test-Path 'tools\ffmpeg_tmp') { Remove-Item -Recurse -Force 'tools\ffmpeg_tmp' }; Expand-Archive -Force 'tools\ffmpeg.zip' 'tools\ffmpeg_tmp'; $d = Get-ChildItem 'tools\ffmpeg_tmp' -Directory | Select-Object -First 1; Move-Item $d.FullName 'tools\ffmpeg'; Remove-Item -Recurse -Force 'tools\ffmpeg_tmp','tools\ffmpeg.zip'"
+if exist "tools\ffmpeg.zip" del "tools\ffmpeg.zip"
+if exist "tools\ffmpeg_tmp" rmdir /s /q "tools\ffmpeg_tmp"
+if exist "tools\ffmpeg" rmdir /s /q "tools\ffmpeg"
+where curl.exe >nul 2>nul
+if errorlevel 1 goto ff_powershell
+echo Source 1 of 2: GitHub
+curl.exe -L --fail --retry 3 --connect-timeout 20 --speed-limit 100000 --speed-time 60 -o "tools\ffmpeg.zip" "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+if not errorlevel 1 goto ff_unpack
+echo Source 1 failed or was too slow. Source 2 of 2: gyan.dev
+if exist "tools\ffmpeg.zip" del "tools\ffmpeg.zip"
+curl.exe -L --fail --retry 3 --connect-timeout 20 --speed-limit 100000 --speed-time 120 -o "tools\ffmpeg.zip" "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+if not errorlevel 1 goto ff_unpack
+goto ff_manual
+:ff_powershell
+echo curl.exe is not available, using PowerShell (no progress is shown, please wait)...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip' -OutFile 'tools\ffmpeg.zip' -TimeoutSec 600"
+if errorlevel 1 goto ff_manual
+:ff_unpack
+echo Unpacking ffmpeg...
+mkdir "tools\ffmpeg_tmp"
+tar -xf "tools\ffmpeg.zip" -C "tools\ffmpeg_tmp"
+if errorlevel 1 powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -Force 'tools\ffmpeg.zip' 'tools\ffmpeg_tmp'"
+for /d %%D in ("tools\ffmpeg_tmp\*") do move "%%D" "tools\ffmpeg" >nul
+if exist "tools\ffmpeg_tmp" rmdir /s /q "tools\ffmpeg_tmp"
+if exist "tools\ffmpeg.zip" del "tools\ffmpeg.zip"
 if exist "tools\ffmpeg\bin\ffmpeg.exe" goto ffmpeg_local
-echo Could not download ffmpeg automatically.
-echo Download "ffmpeg-release-essentials.zip" from https://www.gyan.dev/ffmpeg/builds/
-echo Unpack it so that this file exists: %~dp0tools\ffmpeg\bin\ffmpeg.exe
+:ff_manual
+echo.
+echo Automatic ffmpeg download failed.
+echo Download this file in your browser:
+echo   https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip
+echo Unpack it and copy its folder "bin" into: %~dp0tools\ffmpeg
+echo so that this file exists: %~dp0tools\ffmpeg\bin\ffmpeg.exe
 echo Then run run.bat again.
 goto fail
 :ffmpeg_local

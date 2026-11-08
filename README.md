@@ -26,3 +26,6 @@ See `spec.md` (Russian) for the specification.
 - Each segment is saved as a separate file (`name_part1`, `name_part2`, ...); overlaps and duplicates are allowed.
 - Preview jumps to the frame of the handle being dragged; audio, mute and volume.
 - Light and dark glass themes (toggle in the window).
+
+## ffmpeg on Windows (manual)
+If `run.bat` cannot download ffmpeg, download `ffmpeg-master-latest-win64-gpl.zip` from the BtbN FFmpeg-Builds releases on GitHub, unpack it and copy the `bin` folder to `tools\ffmpeg\bin` next to `run.bat` (the file `tools\ffmpeg\bin\ffmpeg.exe` must exist).
