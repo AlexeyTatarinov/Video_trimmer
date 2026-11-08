@@ -31,6 +31,11 @@ def isolated_settings(tmp_path, monkeypatch):
     """Never touch the user's real QSettings: every window gets a temporary ini file."""
     path = str(tmp_path / "settings.ini")
     monkeypatch.setattr(theme, "make_settings", lambda: QSettings(path, QSettings.IniFormat))
+    # v0.3.0: "move the original to the Recycle Bin" is ON by default; the older UI tests are not
+    # about it, so they run with it OFF (tests/test_v030_delete.py uses the real default)
+    seed = QSettings(path, QSettings.IniFormat)
+    seed.setValue("delete_source_after_export", False)
+    seed.sync()
     theme.set_current("light")
     yield path
     theme.set_current("light")

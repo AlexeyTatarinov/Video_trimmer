@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,7 +31,38 @@ class VideoInfo:
 
 
 # ---------------------------------------------------------------- helpers
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]     # folder with tools/ (run.bat downloads ffmpeg there)
+
+
+def _exe_name(name: str) -> str:
+    return name + (".exe" if os.name == "nt" else "")
+
+
+def _tool_dirs() -> "list[Path]":
+    """Folders searched for ffmpeg/ffprobe before PATH, in priority order."""
+    dirs: list[Path] = []
+    roots: list[Path] = []
+    if getattr(sys, "frozen", False):
+        roots.append(Path(sys.executable).parent)            # next to VideoTrimmer.exe
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            roots.append(Path(meipass))
+    for root in roots:
+        dirs += [root / "ffmpeg", root / "ffmpeg" / "bin"]
+    tools = _PROJECT_ROOT / "tools"
+    try:
+        dirs += sorted(p / "bin" for p in tools.glob("ffmpeg*") if p.is_dir())
+    except OSError:
+        pass
+    return dirs
+
+
 def _tool(name: str) -> str:
+    exe = _exe_name(name)
+    for folder in _tool_dirs():
+        candidate = folder / exe
+        if candidate.is_file():
+            return str(candidate)
     found = shutil.which(name)
     if not found:
         raise TrimError(f"{name} was not found. Please install ffmpeg and make sure it is in PATH.")

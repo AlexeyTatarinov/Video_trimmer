@@ -1,0 +1,231 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      QT_QPA_PLATFORM: offscreen
+      VIDEO_TRIMMER_NO_AUDIO: "1"
+      PYTHONUTF8: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install --upgrade pip
+          if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }
+          python -m pip install -r requirements.txt pyinstaller send2trash
+          if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
+
+      - name: Determine version
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $v = (python -c "import sys; sys.path.insert(0, 'src'); import video_trimmer; print(video_trimmer.__version__)").Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $v) { throw "cannot read video_trimmer.__version__" }
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $tagVersion = $env:GITHUB_REF_NAME.TrimStart('v')
+            if ($tagVersion -ne $v) { throw "Tag $($env:GITHUB_REF_NAME) does not match video_trimmer.__version__ $v" }
+          }
+          "APP_VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Version: $v"
+
+      - name: Download ffmpeg (GPL build)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Join-Path $env:RUNNER_TEMP 'ffmpeg.zip'
+          $dir = Join-Path $env:RUNNER_TEMP 'ffmpeg-dl'
+          curl.exe -L --fail --retry 3 --connect-timeout 30 -o $zip "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+          if ($LASTEXITCODE -ne 0) { throw "ffmpeg download failed" }
+          Expand-Archive -Path $zip -DestinationPath $dir -Force
+          $ff = Get-ChildItem -Path $dir -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          $fp = Get-ChildItem -Path $dir -Recurse -Filter ffprobe.exe | Select-Object -First 1
+          if (-not $ff -or -not $fp) { throw "ffmpeg.exe / ffprobe.exe not found in the archive" }
+          $lic = Get-ChildItem -Path $dir -Recurse -Filter LICENSE.txt | Select-Object -First 1
+          $stage = Join-Path $env:RUNNER_TEMP 'ffmpeg-stage'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item $ff.FullName (Join-Path $stage 'ffmpeg.exe')
+          Copy-Item $fp.FullName (Join-Path $stage 'ffprobe.exe')
+          if ($lic) { Copy-Item $lic.FullName (Join-Path $stage 'LICENSE.txt') }
+          & (Join-Path $stage 'ffmpeg.exe') -version
+          if ($LASTEXITCODE -ne 0) { throw "ffmpeg does not run" }
+          "FFMPEG_STAGE=$stage" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # Make ffmpeg available to the tests below via PATH.
+          $stage | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Run tests (offscreen, non-blocking)
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pytest -q
+          if ($LASTEXITCODE -ne 0) { throw "tests failed" }
+
+      - name: Build with PyInstaller
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m PyInstaller packaging/VideoTrimmer.spec --noconfirm --clean --distpath dist --workpath build
+          if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
+          $app = Join-Path $PWD 'dist/VideoTrimmer'
+          if (-not (Test-Path (Join-Path $app 'VideoTrimmer.exe'))) { throw "VideoTrimmer.exe was not built" }
+          $dst = Join-Path $app 'ffmpeg'
+          New-Item -ItemType Directory -Force -Path $dst | Out-Null
+          Copy-Item (Join-Path $env:FFMPEG_STAGE '*') $dst -Recurse -Force
+          foreach ($f in 'ffmpeg.exe', 'ffprobe.exe') {
+            if (-not (Test-Path (Join-Path $dst $f))) { throw "$f missing in dist" }
+          }
+          $mb = [math]::Round(((Get-ChildItem $app -Recurse -File | Measure-Object Length -Sum).Sum) / 1MB)
+          Write-Host "dist/VideoTrimmer size: $mb MB"
+
+      - name: Self-test the frozen exe
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Remove ffmpeg from PATH for this step so the bundled copy is what gets tested.
+          $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -ne $env:FFMPEG_STAGE }) -join ';'
+          $p = Start-Process -FilePath (Join-Path $PWD 'dist/VideoTrimmer/VideoTrimmer.exe') -ArgumentList @('--selftest', '--selftest-out', "$PWD\selftest.out") -Wait -PassThru
+          if (Test-Path selftest.out) { Get-Content selftest.out }
+          if ($p.ExitCode -ne 0) { throw "selftest exit code $($p.ExitCode)" }
+          if (-not (Test-Path selftest.out) -or -not ((Get-Content selftest.out -Raw) -match 'SELFTEST OK')) { throw "SELFTEST OK not written" }
+
+      - name: Locate Inno Setup compiler
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cmd = Get-Command iscc -ErrorAction SilentlyContinue
+          $iscc = if ($cmd) { $cmd.Source } else { $null }
+          if (-not $iscc) {
+            foreach ($c in @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe")) {
+              if (Test-Path $c) { $iscc = $c; break }
+            }
+          }
+          if (-not $iscc) {
+            choco install innosetup -y --no-progress
+            if ($LASTEXITCODE -ne 0) { throw "choco install innosetup failed" }
+            foreach ($c in @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe")) {
+              if (Test-Path $c) { $iscc = $c; break }
+            }
+          }
+          if (-not $iscc) { throw "ISCC.exe not found" }
+          Write-Host "ISCC: $iscc"
+          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Build installer
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & $env:ISCC "/DAppVersion=$($env:APP_VERSION)" installer/VideoTrimmer.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+          $setup = "installer-out/VideoTrimmer-Setup-$($env:APP_VERSION).exe"
+          if (-not (Test-Path $setup)) { throw "$setup was not created" }
+          "SETUP_EXE=$((Resolve-Path $setup).Path)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Silent install, verify, silent uninstall, verify
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exts = '.mp4 .m4v .mkv .mov .avi .webm .wmv .flv .mpg .mpeg .ts .mts .m2ts .3gp .ogv .vob .mxf'.Split(' ')
+          $dir = Join-Path $env:RUNNER_TEMP 'VTInstall'
+          $exe = Join-Path $dir 'VideoTrimmer.exe'
+          $cls = 'HKCU:\Software\Classes'
+          $expectedCmd = '"' + $exe + '" "%1"'
+
+          function Get-Default($path) { (Get-Item -LiteralPath $path).GetValue('') }
+
+          # ---- install ----
+          $p = Start-Process -FilePath $env:SETUP_EXE -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/TASKS=shellmenu', "/DIR=`"$dir`"", "/LOG=$env:RUNNER_TEMP\install.log") -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "installer exit code $($p.ExitCode)" }
+
+          # ---- verify files ----
+          foreach ($f in 'VideoTrimmer.exe', 'ffmpeg\ffmpeg.exe', 'ffmpeg\ffprobe.exe', 'unins000.exe', 'THIRD_PARTY_NOTICES.md') {
+            if (-not (Test-Path (Join-Path $dir $f))) { throw "missing after install: $f" }
+          }
+
+          # ---- verify registry ----
+          $errors = @()
+          function Need($cond, $what) { if (-not $cond) { $script:errors += $what } }
+          $appKey = "$cls\Applications\VideoTrimmer.exe"
+          Need (Test-Path -LiteralPath $appKey) "missing $appKey"
+          Need ((Get-ItemProperty -LiteralPath $appKey -ErrorAction SilentlyContinue).FriendlyAppName -eq 'Video Trimmer') "FriendlyAppName"
+          Need ((Get-Default "$appKey\shell\open\command") -eq $expectedCmd) "Applications open command"
+          $progKey = "$cls\VideoTrimmer.Video"
+          Need ((Get-Default "$progKey\shell\open\command") -eq $expectedCmd) "ProgID open command"
+          foreach ($e in $exts) {
+            $verb = "$cls\SystemFileAssociations\$e\shell\VideoTrimmer"
+            Need (Test-Path -LiteralPath $verb) "missing verb key $e"
+            Need ((Get-Default $verb) -eq 'Trim with Video Trimmer') "verb text $e"
+            Need (-not [string]::IsNullOrEmpty((Get-Item -LiteralPath $verb).GetValue('Icon'))) "verb icon $e"
+            Need ((Get-Default "$verb\command") -eq $expectedCmd) "verb command $e"
+            $st = Get-Item -LiteralPath "$appKey\SupportedTypes" -ErrorAction SilentlyContinue
+            Need ($null -ne $st -and $st.GetValueNames() -contains $e) "SupportedTypes $e"
+            $owp = Get-Item -LiteralPath "$cls\$e\OpenWithProgids" -ErrorAction SilentlyContinue
+            Need ($null -ne $owp -and $owp.GetValueNames() -contains 'VideoTrimmer.Video') "OpenWithProgids $e"
+            Need (Test-Path -LiteralPath "$cls\$e\OpenWithList\VideoTrimmer.exe") "OpenWithList $e"
+            # Default program must not be changed by the installer (empty or untouched).
+            $def = (Get-Item -LiteralPath "$cls\$e" -ErrorAction SilentlyContinue).GetValue('')
+            Need ([string]::IsNullOrEmpty($def) -or $def -notlike '*VideoTrimmer*') "default program of $e was changed"
+          }
+          if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Host "FAIL: $_" }; throw "$($errors.Count) registry check(s) failed after install" }
+          Write-Host "Install checks passed."
+
+          # ---- the installed exe works ----
+          $t = Start-Process -FilePath $exe -ArgumentList @('--selftest', '--selftest-out', "$env:RUNNER_TEMP\st.out") -Wait -PassThru
+          if (Test-Path "$env:RUNNER_TEMP\st.out") { Get-Content "$env:RUNNER_TEMP\st.out" }
+          if ($t.ExitCode -ne 0) { throw "installed selftest exit code $($t.ExitCode)" }
+          if (-not ((Get-Content "$env:RUNNER_TEMP\st.out" -Raw) -match 'SELFTEST OK')) { throw "installed SELFTEST OK not written" }
+
+          # ---- uninstall ----
+          $u = Start-Process -FilePath (Join-Path $dir 'unins000.exe') -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru
+          if ($u.ExitCode -ne 0) { throw "uninstaller exit code $($u.ExitCode)" }
+          # The uninstaller finishes in a helper process; wait until the folder is gone.
+          $deadline = (Get-Date).AddSeconds(90)
+          while ((Test-Path -LiteralPath $dir) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+          if (Test-Path -LiteralPath $dir) { throw "install folder still exists after uninstall: $(Get-ChildItem $dir -Recurse | Select-Object -First 10 | ForEach-Object FullName)" }
+
+          # ---- verify everything is gone ----
+          $left = @()
+          foreach ($k in @($appKey, $progKey)) { if (Test-Path -LiteralPath $k) { $left += $k } }
+          foreach ($e in $exts) {
+            foreach ($k in @("$cls\SystemFileAssociations\$e\shell\VideoTrimmer", "$cls\$e\OpenWithList\VideoTrimmer.exe")) {
+              if (Test-Path -LiteralPath $k) { $left += $k }
+            }
+            $owp = Get-Item -LiteralPath "$cls\$e\OpenWithProgids" -ErrorAction SilentlyContinue
+            if ($owp -and ($owp.GetValueNames() -contains 'VideoTrimmer.Video')) { $left += "$cls\$e\OpenWithProgids:VideoTrimmer.Video" }
+          }
+          if ($left.Count -gt 0) { $left | ForEach-Object { Write-Host "LEFT: $_" }; throw "$($left.Count) registry item(s) left after uninstall" }
+          Write-Host "Uninstall checks passed."
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: VideoTrimmer-Setup-${{ env.APP_VERSION }}
+          path: installer-out/VideoTrimmer-Setup-${{ env.APP_VERSION }}.exe
+          if-no-files-found: error
+
+      - name: Create GitHub release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $notes = "Windows installer: VideoTrimmer-Setup-$($env:APP_VERSION).exe (per-user install, no admin rights; ffmpeg is bundled, see THIRD_PARTY_NOTICES.md)."
+          gh release create $env:GITHUB_REF_NAME $env:SETUP_EXE --title "Video Trimmer $($env:APP_VERSION)" --generate-notes --notes $notes --verify-tag
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
