@@ -289,3 +289,24 @@ def trim(
         raise TrimError(f"File error during trimming: {exc}") from exc
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def validate_segments(ranges: "list[tuple[float, float]]", duration: float) -> "list[tuple[float, float]]":
+    """v0.2 contract stub: overlaps allowed, order preserved. See spec.md."""
+    raise NotImplementedError
+
+
+def segment_output_paths(src: "str | Path", count: int, out_dir: "str | Path | None" = None) -> "list[Path]":
+    """v0.2 contract stub: <stem>_part1<ext>... without overwriting. See spec.md."""
+    raise NotImplementedError
+
+
+def trim_each(
+    src: "str | Path",
+    ranges: "list[tuple[float, float]]",
+    out_dir: "str | Path",
+    mode: str = "fast",
+    progress: "Callable[[float], None] | None" = None,
+) -> "list[Path]":
+    """v0.2 contract stub: one output file per range. See spec.md."""
+    raise NotImplementedError
