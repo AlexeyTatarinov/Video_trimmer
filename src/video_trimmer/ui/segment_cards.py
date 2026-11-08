@@ -1,0 +1,287 @@
+"""Segment cards: fixed-size cards in a wrapping flow layout inside a small scroll area."""
+from __future__ import annotations
+
+from PySide6.QtCore import QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QPainter, QPen
+from PySide6.QtWidgets import (
+    QFrame, QGridLayout, QScrollArea, QSizePolicy, QWidget,
+)
+
+from video_trimmer import i18n
+from video_trimmer.ui import theme
+from video_trimmer.ui.flow_layout import FlowLayout
+from video_trimmer.ui.timefmt import format_time
+from video_trimmer.ui.theme import with_alpha
+from video_trimmer.ui.widgets import CloseButton, ElidedLabel
+
+DIGITS = "0123456789"
+SPACING = 8
+MARGIN = 4          # room around the cards (selection border, focus)
+VISIBLE_ROWS = 3    # the area grows up to this many rows, then it scrolls
+MIN_AREA_HEIGHT = 92
+
+
+def _by_digit(template: str) -> list[str]:
+    """``template`` with every ``@`` replaced by each digit in turn (widest digit wins)."""
+    return [template.replace("@", d) for d in DIGITS]
+
+
+class SegmentCard(QFrame):
+    """One segment: index, ``start - end``, duration and a delete cross. Standard fixed size."""
+
+    clicked = Signal(int)
+    deleteRequested = Signal(int)
+
+    def __init__(self, index: int, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._index = index
+        self._selected = False
+        self._hover = False
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setAttribute(Qt.WA_Hover, True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.index_label = ElidedLabel()
+        self.index_label.setObjectName("cardIndex")
+        self.index_label.set_measure_texts(_by_digit("#@@@"))
+        self.range_label = ElidedLabel()
+        self.range_label.setObjectName("cardRange")
+        self.range_label.set_measure_texts(_by_digit("@@:@@:@@.@@@ - @@:@@:@@.@@@"))
+        self.duration_label = ElidedLabel()
+        self.duration_label.setObjectName("cardDim")
+        words = i18n.all_texts("duration")
+        self.duration_label.set_measure_texts(
+            [f"{w}: {t}" for w in words for t in _by_digit("@@:@@:@@.@@@")])
+        self.delete_button = CloseButton()
+        self.delete_button.clicked.connect(lambda: self.deleteRequested.emit(self._index))
+        for lbl in (self.index_label, self.range_label, self.duration_label):
+            lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        lay = QGridLayout(self)
+        lay.setContentsMargins(12, 8, 8, 8)
+        lay.setHorizontalSpacing(8)
+        lay.setVerticalSpacing(2)
+        lay.addWidget(self.index_label, 0, 0, 2, 1, Qt.AlignVCenter)
+        lay.addWidget(self.range_label, 0, 1)
+        lay.addWidget(self.delete_button, 0, 2, Qt.AlignTop | Qt.AlignRight)
+        lay.addWidget(self.duration_label, 1, 1, 1, 2)
+
+    # ---- content
+    def text_labels(self) -> list[ElidedLabel]:
+        return [self.index_label, self.range_label, self.duration_label]
+
+    def index(self) -> int:
+        return self._index
+
+    def set_segment(self, index: int, start: float, end: float, language: str) -> None:
+        self._index = index
+        self.index_label.setText(f"#{index + 1}")
+        self.range_label.setText(f"{format_time(start)} - {format_time(end)}")
+        self.duration_label.setText(f"{i18n.tr(language, 'duration')}: {format_time(end - start)}")
+        self.setToolTip(f"{i18n.tr(language, 'segment')} {index + 1}")
+        self.update()
+
+    def is_selected(self) -> bool:
+        return self._selected
+
+    def set_selected(self, selected: bool) -> None:
+        if self._selected != selected:
+            self._selected = selected
+            self.index_label.setProperty("selected", selected)
+            st = self.index_label.style()
+            st.unpolish(self.index_label)
+            st.polish(self.index_label)
+            self.update()
+
+    # ---- interaction
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.LeftButton:
+            self.setFocus(Qt.MouseFocusReason)
+            self.clicked.emit(self._index)
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() in (Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter):
+            self.clicked.emit(self._index)
+        elif event.key() in (Qt.Key_Delete, Qt.Key_Backspace) and self.delete_button.isEnabled():
+            self.deleteRequested.emit(self._index)
+        else:
+            super().keyPressEvent(event)
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        self._hover = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self._hover = False
+        self.update()
+        super().leaveEvent(event)
+
+    # ---- painting
+    def paintEvent(self, event) -> None:  # noqa: N802
+        th = theme.current()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect()).adjusted(1.5, 1.5, -1.5, -1.5)
+        if self._selected:
+            fill, pen_color, pen_w = th.selection, th.accent, 2.0
+        else:
+            fill = th.input_bg
+            if self._hover:
+                fill = with_alpha(th.selection, 0.45)
+            pen_color, pen_w = th.input_border, 1.2
+        p.setBrush(fill)
+        p.setPen(QPen(pen_color, pen_w))
+        p.drawRoundedRect(r, 14, 14)
+        if self.hasFocus():
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(with_alpha(th.accent, 0.9), 1.3, Qt.DashLine))
+            p.drawRoundedRect(r.adjusted(-1, -1, 1, 1), 15, 15)
+
+
+class SegmentCardList(QScrollArea):
+    """Cards flowing left to right and wrapping; height grows up to three rows, then scrolls."""
+
+    currentRowChanged = Signal(int)
+    removeRequested = Signal(int)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._cards: list[SegmentCard] = []
+        self._current = -1
+        self._language = i18n.DEFAULT_LANGUAGE
+        self._removable = True
+        self.setFrameShape(QFrame.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setWidgetResizable(True)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setObjectName("segmentList")
+        self.viewport().setAutoFillBackground(False)
+        inner = QWidget()
+        inner.setObjectName("segmentInner")
+        inner.setAutoFillBackground(False)
+        self._flow = FlowLayout(inner, SPACING)
+        self._flow.setContentsMargins(MARGIN, MARGIN, MARGIN, MARGIN)
+        self.setWidget(inner)
+        self.setFixedHeight(MIN_AREA_HEIGHT)
+
+    # ---- model-ish API (mirrors the old QListWidget calls)
+    def count(self) -> int:
+        return len(self._cards)
+
+    def cards(self) -> list[SegmentCard]:
+        return list(self._cards)
+
+    def card(self, row: int) -> SegmentCard:
+        return self._cards[row]
+
+    def currentRow(self) -> int:  # noqa: N802
+        return self._current
+
+    def setCurrentRow(self, row: int) -> None:  # noqa: N802
+        if not -1 <= row < len(self._cards):
+            return
+        if row == self._current:
+            return
+        self._current = row
+        for i, c in enumerate(self._cards):
+            c.set_selected(i == row)
+        if 0 <= row < len(self._cards):
+            self.ensureWidgetVisible(self._cards[row], 4, 4)
+        self.currentRowChanged.emit(row)
+
+    def set_segments(self, segments: list[tuple[float, float]], language: str,
+                     select: int | None = None) -> None:
+        """Rebuild the cards. Keeps the selected row (or sets ``select``) without emitting."""
+        self._language = language
+        row = self._current if select is None else select
+        while len(self._cards) > len(segments):
+            c = self._cards.pop()
+            self._flow.removeWidget(c)
+            c.hide()
+            c.setParent(None)
+            c.deleteLater()
+        while len(self._cards) < len(segments):
+            c = SegmentCard(len(self._cards), self.widget())
+            c.clicked.connect(self.setCurrentRow)
+            c.deleteRequested.connect(self.removeRequested)
+            self._flow.addWidget(c)
+            c.show()
+            self._cards.append(c)
+        for i, (s, e) in enumerate(segments):
+            self._cards[i].set_segment(i, s, e, language)
+            self._cards[i].set_selected(i == row)
+            self._cards[i].delete_button.setEnabled(self._removable and len(segments) > 1)
+        self._current = row if 0 <= row < len(segments) else -1
+        self._adjust_height()
+
+    def update_segment(self, row: int, segment: tuple[float, float]) -> None:
+        if 0 <= row < len(self._cards):
+            self._cards[row].set_segment(row, segment[0], segment[1], self._language)
+
+    def set_removable(self, removable: bool) -> None:
+        self._removable = removable
+        for c in self._cards:
+            c.delete_button.setEnabled(removable and len(self._cards) > 1)
+
+    # ---- sizing
+    def _extent(self) -> int:
+        self.ensurePolished()
+        return max(self.verticalScrollBar().sizeHint().width(), 10) + 4
+
+    def _row_height(self) -> int:
+        return self._cards[0].sizeHint().height() if self._cards else 56
+
+    def _max_height(self) -> int:
+        return VISIBLE_ROWS * self._row_height() + (VISIBLE_ROWS - 1) * SPACING + 2 * MARGIN
+
+    def _adjust_height(self) -> None:
+        """Pick the area height for the current width (heightForWidth of the flow, capped)."""
+        extent = self._extent()
+        avail = self.width() - 2 * self.frameWidth() - extent
+        self._flow.setContentsMargins(MARGIN, MARGIN, MARGIN, MARGIN)
+        need = self._flow.heightForWidth(max(avail, 1)) if self._cards else 0
+        top = self._max_height()
+        scrolling = need > top
+        right = MARGIN if scrolling else MARGIN + extent
+        m = self._flow.contentsMargins()
+        if m.right() != right:
+            self._flow.setContentsMargins(MARGIN, MARGIN, right, MARGIN)
+        height = min(max(need, MIN_AREA_HEIGHT), top)
+        if self.height() != height or self.minimumHeight() != height:
+            self.setFixedHeight(height)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._adjust_height()
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return QSize(self._minimum_width() + 200, self.height())
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return QSize(self._minimum_width(), self.height())
+
+    def _minimum_width(self) -> int:
+        card_w = self._cards[0].sizeHint().width() if self._cards else 240
+        return card_w + 2 * MARGIN + self._extent()
+
+    # ---- keyboard
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() in (Qt.Key_Left, Qt.Key_Up) and self._current > 0:
+            self.setCurrentRow(self._current - 1)
+        elif event.key() in (Qt.Key_Right, Qt.Key_Down) and self._current < len(self._cards) - 1:
+            self.setCurrentRow(self._current + 1)
+        else:
+            super().keyPressEvent(event)
+
+    # ---- painting: the glass "well" behind the cards
+    def paintEvent(self, event) -> None:  # noqa: N802
+        th = theme.current()
+        p = QPainter(self.viewport())  # a scroll area paints on its viewport
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setBrush(with_alpha(th.input_bg, 0.55))
+        p.setPen(QPen(with_alpha(th.input_border, 0.8), 1.0))
+        p.drawRoundedRect(QRectF(self.viewport().rect()).adjusted(0.5, 0.5, -0.5, -0.5), 16, 16)

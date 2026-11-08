@@ -208,17 +208,11 @@ QComboBox QAbstractItemView {{
     border: 1px solid {css(th.input_border)}; border-radius: 10px; padding: 4px;
     selection-background-color: {css(th.selection)}; selection-color: {css(th.text)}; outline: none;
 }}
-QListWidget {{
-    color: {css(th.text)}; background: {css(th.input_bg)};
-    border: 1px solid {css(th.input_border)}; border-radius: 16px; padding: 6px; outline: none;
-}}
-QListWidget::item {{ padding: 6px 12px; border-radius: 12px; margin: 1px 0; }}
-QListWidget::item:hover {{ background: {css(with_alpha(th.selection, 0.5))}; }}
-QListWidget::item:selected {{
-    background: {css(th.selection)}; color: {css(th.text)};
-    border: 1px solid {css(th.accent)};
-}}
-QListWidget:disabled {{ color: {css(th.text_dim)}; }}
+QScrollArea#segmentList, QScrollArea#segmentList > QWidget, QWidget#segmentInner {{ background: transparent; }}
+QLabel#cardIndex {{ color: {css(th.accent)}; font-weight: 700; font-size: 14px; }}
+QLabel#cardIndex[selected="true"] {{ color: {css(th.text)}; }}
+QLabel#cardRange {{ font-weight: 600; }}
+QLabel#cardDim {{ color: {css(th.text_dim)}; font-size: 12px; }}
 QProgressBar {{
     background: {css(th.track)}; border: 1px solid {css(th.track_border)};
     border-radius: 7px; min-height: 14px; max-height: 14px; text-align: center;
@@ -231,6 +225,11 @@ QProgressBar::chunk {{
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
 QScrollBar::handle:vertical {{ background: {css(th.track_border)}; border-radius: 4px; min-height: 24px; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
+QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 2px; }}
+QScrollBar::handle:horizontal {{ background: {css(th.track_border)}; border-radius: 4px; min-width: 24px; }}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: transparent; }}
 QToolTip {{
     color: {css(th.text)}; background: {css(th.popup_bg)};
     border: 1px solid {css(th.input_border)}; border-radius: 6px; padding: 4px 8px;

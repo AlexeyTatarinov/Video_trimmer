@@ -1,10 +1,13 @@
 """Glass-styled custom widgets: background, panel, pill/round buttons, slider, combo box."""
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt
-from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen, QBrush
+from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt
+from PySide6.QtGui import (
+    QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPen, QBrush,
+)
 from PySide6.QtWidgets import (
-    QComboBox, QFrame, QLabel, QPushButton, QSizePolicy, QSlider, QVBoxLayout, QWidget,
+    QAbstractButton, QComboBox, QFrame, QLabel, QPushButton, QSizePolicy, QSlider, QVBoxLayout,
+    QWidget,
 )
 
 from video_trimmer.ui import theme
@@ -19,6 +22,77 @@ class GlassBackground(QWidget):
         paint_background(p, QRectF(self.rect()), theme.current())
 
 
+class ElidedLabel(QLabel):
+    """One-line label that never stretches its container.
+
+    Without measure texts the label is flexible: it takes whatever width the layout gives it and
+    shows the text elided with an ellipsis (full text in the tooltip). With ``set_measure_texts``
+    its width is fixed to the widest of the given texts (e.g. one per language), so switching
+    the text never changes the geometry. ``text()`` always returns the full text.
+    """
+
+    PAD = 2
+
+    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._full = ""
+        self._measure: list[str] = []
+        self._auto_tip = True
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.setTextFormat(Qt.PlainText)
+        self.setWordWrap(False)
+        self.setText(text)
+
+    def set_measure_texts(self, texts: list[str]) -> None:
+        self._measure = list(texts)
+        self.setSizePolicy(QSizePolicy.Fixed if self._measure else QSizePolicy.Ignored,
+                           QSizePolicy.Fixed)
+        self.updateGeometry()
+        self._show_elided()
+
+    def text(self) -> str:  # noqa: A003
+        return self._full
+
+    def setText(self, text: str) -> None:  # noqa: N802
+        self._full = text
+        self._show_elided()
+
+    def _metrics(self) -> QFontMetrics:
+        self.ensurePolished()
+        return QFontMetrics(self.font())
+
+    def _show_elided(self) -> None:
+        avail = max(self.width() - self.PAD, 0)
+        fm = self._metrics()
+        shown = self._full if fm.horizontalAdvance(self._full) <= avail or self.width() <= 0 \
+            else fm.elidedText(self._full, Qt.ElideRight, avail)
+        if QLabel.text(self) != shown:
+            QLabel.setText(self, shown)
+        if self._auto_tip:
+            self.setToolTip(self._full if shown != self._full else "")
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        fm = self._metrics()
+        texts = self._measure or [self._full]
+        w = max(fm.horizontalAdvance(t) for t in texts) + self.PAD
+        return QSize(w, fm.height() + 2)
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        if self._measure:
+            return self.sizeHint()
+        return QSize(0, self._metrics().height() + 2)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._show_elided()
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (QEvent.FontChange, QEvent.StyleChange, QEvent.Polish):
+            self.updateGeometry()
+            self._show_elided()
+
+
 class GlassPanel(QFrame):
     """Translucent rounded panel with an optional small caption and a ``body`` layout."""
 
@@ -26,10 +100,11 @@ class GlassPanel(QFrame):
         super().__init__(parent)
         self.setFrameShape(QFrame.NoFrame)
         self.setAttribute(Qt.WA_StyledBackground, False)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.body = QVBoxLayout(self)
         self.body.setContentsMargins(18, 14, 18, 16)
         self.body.setSpacing(10)
-        self.caption = QLabel(title)
+        self.caption = ElidedLabel(title)
         self.caption.setObjectName("caption")
         self.body.addWidget(self.caption)
         self.caption.setVisible(bool(title))
@@ -55,6 +130,8 @@ class GlassButton(QPushButton):
     ``primary=True`` gives the accent-coloured call-to-action look.
     """
 
+    MIN_TEXT_WIDTH = 104  # a text button may be squeezed down to this (text is then elided)
+
     def __init__(self, text: str = "", icon_kind: str | None = None, primary: bool = False,
                  diameter: int = 44, parent: QWidget | None = None) -> None:
         super().__init__(text, parent)
@@ -62,6 +139,8 @@ class GlassButton(QPushButton):
         self._primary = primary
         self._diameter = diameter
         self._hover = False
+        self._texts: list[str] = []
+        self._shrinkable = False
         self.setCursor(Qt.PointingHandCursor)
         self.setAttribute(Qt.WA_Hover, True)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -69,7 +148,7 @@ class GlassButton(QPushButton):
             self.setFixedSize(diameter, diameter)
         else:
             self.setMinimumHeight(40)
-            self.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+            self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         theme.add_shadow(self, blur=16, dy=4, strength=0.8)
 
     # ---- API
@@ -83,14 +162,41 @@ class GlassButton(QPushButton):
     def isPrimary(self) -> bool:  # noqa: N802
         return self._primary
 
+    def set_texts(self, texts: list[str]) -> None:
+        """Texts the button can show (one per language): its width fits the longest of them."""
+        self._texts = list(texts)
+        self.updateGeometry()
+
+    def set_shrinkable(self, shrinkable: bool) -> None:
+        """Allow the layout to squeeze the button below its text width (the text is elided)."""
+        self._shrinkable = shrinkable
+        self.updateGeometry()
+
+    def _bold_metrics(self) -> QFontMetrics:
+        self.ensurePolished()
+        font = QFont(self.font())
+        font.setWeight(QFont.Weight.DemiBold)
+        return QFontMetrics(font)
+
     def sizeHint(self) -> QSize:  # noqa: N802
         if self._icon_kind:
             return QSize(self._diameter, self._diameter)
-        w = self.fontMetrics().horizontalAdvance(self.text()) + 40
+        fm = self._bold_metrics()
+        w = max(fm.horizontalAdvance(t) for t in (self._texts or [self.text()])) + 36
         return QSize(max(w, 96), 40)
 
     def minimumSizeHint(self) -> QSize:  # noqa: N802
-        return self.sizeHint()
+        if self._icon_kind:
+            return QSize(self._diameter, self._diameter)
+        hint = self.sizeHint()
+        if not self._shrinkable:
+            return hint
+        return QSize(min(hint.width(), self.MIN_TEXT_WIDTH), hint.height())
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (QEvent.FontChange, QEvent.StyleChange, QEvent.Polish):
+            self.updateGeometry()
 
     def enterEvent(self, event) -> None:  # noqa: N802
         self._hover = True
@@ -190,7 +296,9 @@ class GlassButton(QPushButton):
             font.setWeight(font.Weight.DemiBold)
             p.setFont(font)
             p.setPen(text_color)
-            p.drawText(content, Qt.AlignCenter, self.text())
+            text = QFontMetrics(font).elidedText(self.text(), Qt.ElideRight,
+                                                 max(int(content.width()) - 20, 10))
+            p.drawText(content, Qt.AlignCenter, text)
 
 
 class GlassSlider(QSlider):
@@ -267,3 +375,50 @@ class GlassComboBox(QComboBox):
         cx, cy = self.width() - 20, self.height() / 2
         p.drawLine(QPointF(cx - 4, cy - 2), QPointF(cx, cy + 2))
         p.drawLine(QPointF(cx, cy + 2), QPointF(cx + 4, cy - 2))
+
+
+class CloseButton(QAbstractButton):
+    """Small round button with a cross (deletes a segment card)."""
+
+    SIZE = 24
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(self.SIZE, self.SIZE)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setAttribute(Qt.WA_Hover, True)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self._hover = False
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return QSize(self.SIZE, self.SIZE)
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        self._hover = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self._hover = False
+        self.update()
+        super().leaveEvent(event)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        th = theme.current()
+        enabled = self.isEnabled()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect()).adjusted(2, 2, -2, -2)
+        if (self._hover or self.isDown()) and enabled:
+            p.setPen(Qt.NoPen)
+            p.setBrush(with_alpha(th.accent, 0.35 if not self.isDown() else 0.55))
+            p.drawEllipse(r)
+        color = th.text if enabled else with_alpha(th.text_dim, 0.45)
+        p.setPen(QPen(color, 1.8, Qt.SolidLine, Qt.RoundCap))
+        c, d = r.center(), r.width() * 0.22
+        p.drawLine(QPointF(c.x() - d, c.y() - d), QPointF(c.x() + d, c.y() + d))
+        p.drawLine(QPointF(c.x() - d, c.y() + d), QPointF(c.x() + d, c.y() - d))
+        if self.hasFocus() and enabled:
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(with_alpha(th.accent, 0.9), 1.3, Qt.DashLine))
+            p.drawEllipse(r.adjusted(-1, -1, 1, 1))

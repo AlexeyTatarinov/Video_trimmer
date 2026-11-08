@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtCore import QObject, QTimer, Qt, QUrl, Signal
-from PySide6.QtWidgets import QLabel, QWidget
+from PySide6.QtCore import QObject, QSize, QTimer, Qt, QUrl, Signal
+from PySide6.QtWidgets import QLabel, QSizePolicy, QWidget
 
 try:  # QtMultimedia is shipped in PySide6-Addons, not in PySide6-Essentials
     from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
@@ -12,6 +12,31 @@ try:  # QtMultimedia is shipped in PySide6-Addons, not in PySide6-Essentials
     MULTIMEDIA_AVAILABLE = True
 except ImportError:  # pragma: no cover - depends on installation
     MULTIMEDIA_AVAILABLE = False
+
+
+VIDEO_MIN_SIZE = QSize(320, 180)
+VIDEO_HINT_SIZE = QSize(640, 360)
+
+if MULTIMEDIA_AVAILABLE:
+    class ResponsiveVideoWidget(QVideoWidget):
+        """Video surface whose size never depends on the frame size of the loaded video.
+
+        QVideoWidget reports the native frame size (3840x2160 for a 4K clip) as its size hint,
+        which makes layouts grow the window and paint over the neighbouring panels. Here the hint
+        is constant, the minimum is small and the policy is Expanding/Ignored: the layout alone
+        decides how much room the video gets.
+        """
+
+        def __init__(self, parent: QWidget | None = None) -> None:
+            super().__init__(parent)
+            self.setMinimumSize(VIDEO_MIN_SIZE)
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
+
+        def sizeHint(self) -> QSize:  # noqa: N802
+            return QSize(VIDEO_HINT_SIZE)
+
+        def minimumSizeHint(self) -> QSize:  # noqa: N802
+            return QSize(VIDEO_MIN_SIZE)
 
 
 def _audio_allowed() -> bool:
@@ -43,7 +68,7 @@ class PreviewPlayer(QObject):
         self._seek_timer.setInterval(self.SEEK_INTERVAL_MS)
         self._seek_timer.timeout.connect(self._on_seek_timer)
         if MULTIMEDIA_AVAILABLE:
-            self.video_widget: QWidget = QVideoWidget()
+            self.video_widget: QWidget = ResponsiveVideoWidget()
             self._player = QMediaPlayer(self)
             if _audio_allowed():
                 self._audio = QAudioOutput(self)
@@ -57,6 +82,8 @@ class PreviewPlayer(QObject):
             self._player = None
             self.video_widget = QLabel("QtMultimedia (PySide6-Addons) is not installed:\npreview unavailable.")
             self.video_widget.setAlignment(Qt.AlignCenter)
+            self.video_widget.setMinimumSize(VIDEO_MIN_SIZE)
+            self.video_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
 
     def _on_state(self, state) -> None:
         self._playing = state == QMediaPlayer.PlayingState
