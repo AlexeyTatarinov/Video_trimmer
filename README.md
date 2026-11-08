@@ -8,6 +8,7 @@ Instant video trimming: open a video, pick the parts to keep with the slider, sa
 - `pip install -r requirements.txt` (PySide6)
 
 ## Run
+- Windows, no commands: double-click `run.bat` (installs Python and ffmpeg via winget if missing, then starts the GUI).
 - GUI: `python -m video_trimmer` (from the `src` folder, or set `PYTHONPATH=src`)
 - CLI: `python -m video_trimmer.cli INPUT OUTPUT --range 10-20 --range 0:30-0:45 --mode fast`
 
