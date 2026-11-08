@@ -116,3 +116,62 @@ def test_missing_range_nonzero(run_cli, sample_video, work_dir):
     assert r.returncode != 0
     assert r.stderr.strip()
     assert not (work_dir / "o.mp4").exists()
+
+
+# ---------------------------------------------------------------- --separate (v0.2)
+def test_separate_overlapping_ranges(run_cli, sample_video, work_dir, ffprobe_json):
+    out = work_dir / "res"
+    r = run_cli(sample_video, out, "--separate", "--range", "2-6", "--range", "4-9",
+                "--range", "4-9", "--mode", "precise")
+    assert r.returncode == 0, r.stderr
+    assert out.is_dir()
+    files = sorted(out.iterdir())
+    assert [f.name for f in files] == ["sample_part1.mp4", "sample_part2.mp4", "sample_part3.mp4"]
+    for f, want in zip(files, (4.0, 5.0, 5.0)):
+        assert ffprobe_json(f)["duration"] == pytest.approx(want, abs=0.1)
+    for f in files:
+        assert str(f) in r.stdout
+
+
+def test_separate_fast_default_mode(run_cli, sample_video, work_dir, ffprobe_json):
+    out = work_dir / "res"
+    r = run_cli(sample_video, out, "--separate", "--range", "1-4", "--range", "2-5")
+    assert r.returncode == 0, r.stderr
+    assert len(list(out.iterdir())) == 2
+    for f in out.iterdir():
+        assert ffprobe_json(f)["duration"] == pytest.approx(3.0, abs=1.0)
+
+
+def test_separate_existing_folder_with_files_not_overwritten(run_cli, sample_video, work_dir):
+    out = work_dir / "res"
+    out.mkdir()
+    (out / "sample_part1.mp4").write_bytes(b"keep")
+    r = run_cli(sample_video, out, "--separate", "--range", "1-3")
+    assert r.returncode == 0, r.stderr
+    assert (out / "sample_part1.mp4").read_bytes() == b"keep"
+    assert (out / "sample_2_part1.mp4").is_file()
+    assert str(out / "sample_2_part1.mp4") in r.stdout
+
+
+def test_separate_error_exit_1(run_cli, sample_video, work_dir):
+    out = work_dir / "res"
+    r = run_cli(sample_video, out, "--separate", "--range", "1-3", "--range", "5-50")
+    assert r.returncode == 1
+    assert r.stderr.strip()
+    assert not out.exists()
+
+
+def test_separate_missing_input_exit_1(run_cli, work_dir):
+    r = run_cli(work_dir / "nope.mp4", work_dir / "res", "--separate", "--range", "0-1")
+    assert r.returncode == 1
+    assert r.stderr.strip()
+    assert not (work_dir / "res").exists()
+
+
+def test_without_flag_overlap_still_error_and_single_file(run_cli, sample_video, work_dir):
+    r = run_cli(sample_video, work_dir / "o.mp4", "--range", "1-4", "--range", "3-6")
+    assert r.returncode == 1
+    r = run_cli(sample_video, work_dir / "o.mp4", "--range", "1-3", "--range", "5-7",
+                "--mode", "precise")
+    assert r.returncode == 0, r.stderr
+    assert (work_dir / "o.mp4").is_file()

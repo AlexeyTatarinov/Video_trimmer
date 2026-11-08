@@ -245,14 +245,7 @@ def trim(
         for i, (start, end) in enumerate(valid):
             length = end - start
             out = tmp / f"seg{i}{suffix}"
-            args = ["-ss", f"{start:.6f}", "-i", str(src_p), "-t", f"{length:.6f}",
-                    "-map", "0:v:0?", "-map", "0:a:0?"]
-            if mode == "fast":
-                args += ["-c", "copy", "-avoid_negative_ts", "make_zero"]
-            else:
-                args += ["-c:v", "libx264", "-crf", "18", "-preset", "veryfast",
-                         "-pix_fmt", "yuv420p", "-c:a", "aac"]
-            args += ["-y", str(out)]
+            args = _cut_args(src_p, start, length, mode, out)
 
             def on_frac(f: float, done=done, length=length) -> None:
                 v = (done + f * length) / total * seg_share
@@ -292,13 +285,54 @@ def trim(
 
 
 def validate_segments(ranges: "list[tuple[float, float]]", duration: float) -> "list[tuple[float, float]]":
-    """v0.2 contract stub: overlaps allowed, order preserved. See spec.md."""
-    raise NotImplementedError
+    """Validate fragments; overlaps and duplicates are allowed, the given order is kept."""
+    if not ranges:
+        raise TrimError("No ranges given: choose at least one fragment to keep.")
+    clean: list[tuple[float, float]] = []
+    for r in ranges:
+        try:
+            start, end = r
+            start, end = start + 0, end + 0  # type check
+        except (TypeError, ValueError) as exc:
+            raise TrimError(f"Invalid range: {r!r}") from exc
+        if start < 0:
+            raise TrimError(f"Range start {start} is before the beginning of the video.")
+        if start >= end:
+            raise TrimError(f"Range start ({start}) must be less than its end ({end}).")
+        if end > duration + _TOLERANCE:
+            raise TrimError(f"Range end {end} is beyond the video duration ({duration:.3f} s).")
+        clean.append((start, end))
+    return clean
 
 
 def segment_output_paths(src: "str | Path", count: int, out_dir: "str | Path | None" = None) -> "list[Path]":
-    """v0.2 contract stub: <stem>_part1<ext>... without overwriting. See spec.md."""
-    raise NotImplementedError
+    """Names <stem>_part1<ext>... in out_dir (default: source folder).
+
+    If any file of the set exists, the whole set gets a stem suffix _2, _3, ...
+    Nothing is created on disk.
+    """
+    if not isinstance(count, int) or count < 1:
+        raise TrimError("At least one output file is required.")
+    p = Path(src)
+    folder = Path(out_dir) if out_dir is not None else p.parent
+    n = 1
+    while True:
+        stem = p.stem if n == 1 else f"{p.stem}_{n}"
+        paths = [folder / f"{stem}_part{i}{p.suffix}" for i in range(1, count + 1)]
+        if not any(x.exists() or x.is_symlink() for x in paths):
+            return paths
+        n += 1
+
+
+def _cut_args(src: Path, start: float, length: float, mode: str, out: Path) -> "list[str]":
+    args = ["-ss", f"{start:.6f}", "-i", str(src), "-t", f"{length:.6f}",
+            "-map", "0:v:0?", "-map", "0:a:0?"]
+    if mode == "fast":
+        args += ["-c", "copy", "-avoid_negative_ts", "make_zero"]
+    else:
+        args += ["-c:v", "libx264", "-crf", "18", "-preset", "veryfast",
+                 "-pix_fmt", "yuv420p", "-c:a", "aac"]
+    return args + ["-y", str(out)]
 
 
 def trim_each(
@@ -308,5 +342,91 @@ def trim_each(
     mode: str = "fast",
     progress: "Callable[[float], None] | None" = None,
 ) -> "list[Path]":
-    """v0.2 contract stub: one output file per range. See spec.md."""
-    raise NotImplementedError
+    """Cut every range from the original source into its own file (all or nothing)."""
+    src_p = _check_file(src)
+    if mode not in _MODES:
+        raise TrimError(f"Invalid mode '{mode}'. Use 'fast' or 'precise'.")
+    info = probe(src_p)
+    valid = validate_segments(ranges, info.duration)
+    out_p = Path(out_dir)
+    if out_p.exists() and not out_p.is_dir():
+        raise TrimError(f"Output folder is not a folder: {out_p}")
+
+    def report(v: float) -> None:
+        if progress:
+            progress(max(0.0, min(1.0, v)))
+
+    created_dirs: list[Path] = []
+    moved: list[Path] = []
+    tmp: "Path | None" = None
+    ok = False
+    try:
+        missing = []
+        d = out_p
+        while not d.exists():
+            missing.append(d)
+            d = d.parent
+        try:
+            out_p.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise TrimError(f"Cannot create output folder {out_p}: {exc}") from exc
+        created_dirs = missing  # deepest first
+        try:
+            tmp = Path(tempfile.mkdtemp(prefix=".vt_tmp_", dir=out_p))
+        except OSError as exc:
+            raise TrimError(f"Cannot write to {out_p}: {exc}") from exc
+
+        suffix = src_p.suffix or ".mp4"
+        total = sum(e - s for s, e in valid)
+        report(0.0)
+        last = [0.0]
+        done = 0.0
+        temps: list[Path] = []
+        for i, (start, end) in enumerate(valid):
+            length = end - start
+            out = tmp / f"seg{i}{suffix}"
+
+            def on_frac(f: float, done=done, length=length) -> None:
+                v = (done + f * length) / total * 0.99
+                if v > last[0]:
+                    last[0] = v
+                    report(v)
+
+            _run_ffmpeg(_cut_args(src_p, start, length, mode, out), length, on_frac)
+            if not out.is_file() or out.stat().st_size == 0:
+                raise TrimError("ffmpeg produced no output for a fragment.")
+            temps.append(out)
+            done += length
+            last[0] = max(last[0], done / total * 0.99)
+            report(last[0])
+
+        finals = segment_output_paths(src_p, len(temps), out_p)
+        for t, f in zip(temps, finals):
+            if f.exists() or f.is_symlink():
+                raise TrimError(f"Output file already exists: {f}")
+            try:
+                os.replace(t, f)
+            except OSError as exc:
+                raise TrimError(f"Cannot save the result to {f}: {exc}") from exc
+            moved.append(f)
+        ok = True
+        report(1.0)
+        return finals
+    except TrimError:
+        raise
+    except OSError as exc:
+        raise TrimError(f"File error during trimming: {exc}") from exc
+    finally:
+        if tmp is not None:
+            shutil.rmtree(tmp, ignore_errors=True)
+        if not ok:
+            for f in moved:
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+            for d in created_dirs:
+                try:
+                    d.rmdir()
+                except OSError:
+                    break

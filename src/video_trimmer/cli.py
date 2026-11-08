@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .core import TrimError, trim
+from .core import TrimError, trim, trim_each
 
 
 def parse_time(text: str) -> float:
@@ -40,10 +40,13 @@ def build_parser() -> argparse.ArgumentParser:
         prog="python -m video_trimmer.cli",
         description="Keep selected fragments of a video and save them as one file.")
     ap.add_argument("input", help="source video file")
-    ap.add_argument("output", help="output file (must not exist)")
+    ap.add_argument("output", help="output file (must not exist); with --separate: output folder")
     ap.add_argument("--range", dest="ranges", action="append", required=True,
                     type=parse_range, metavar="START-END",
                     help="fragment to keep; seconds, mm:ss or hh:mm:ss; repeatable")
+    ap.add_argument("--separate", action="store_true",
+                    help="save every --range as its own file; OUTPUT is then a folder "
+                         "(ranges may overlap)")
     ap.add_argument("--mode", choices=("fast", "precise"), default="fast",
                     help="fast: no re-encoding, keyframe-snapped (default); "
                          "precise: re-encode, frame-accurate")
@@ -53,6 +56,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: "list[str] | None" = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.separate:
+            outs = trim_each(args.input, args.ranges, args.output, mode=args.mode)
+            for path in outs:
+                print(f"Saved: {path}")
+            return 0
         out = trim(args.input, args.ranges, args.output, mode=args.mode)
     except TrimError as exc:
         print(f"Error: {exc}", file=sys.stderr)

@@ -1,15 +1,23 @@
 """Two-handle range slider over [0, maximum] in seconds."""
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtCore import QPointF, Qt, Signal
+from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
-HANDLE_W = 12
+from video_trimmer.ui import theme
+
+HANDLE_W = 24  # horizontal room reserved at each end (handle diameter is 20)
+HANDLE_R = 10.0
 
 
 class RangeSlider(QWidget):
     rangeChanged = Signal(float, float)  # low, high
+    # v0.2: which handle ("start" or "end") changed and its new value in seconds.
+    # Emitted for every change of that handle (mouse drag and programmatic setters).
+    handleMoved = Signal(str, float)
+    dragStarted = Signal(str)   # "start" | "end": the user pressed that handle
+    dragFinished = Signal(str)  # "start" | "end": the user released it
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -17,7 +25,9 @@ class RangeSlider(QWidget):
         self._low = 0.0
         self._high = 1.0
         self._active: str | None = None
-        self.setMinimumHeight(32)
+        self._hover = False
+        self.setAttribute(Qt.WA_Hover, True)
+        self.setMinimumHeight(40)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
     # ---- value logic (pure clamping)
@@ -56,6 +66,13 @@ class RangeSlider(QWidget):
         self.update()
         if (self._low, self._high) != old:
             self.rangeChanged.emit(self._low, self._high)
+            if self._low != old[0]:
+                self.handleMoved.emit("start", self._low)
+            if self._high != old[1]:
+                self.handleMoved.emit("end", self._high)
+
+    def is_dragging(self) -> bool:
+        return self._active is not None
 
     # ---- geometry
     def _track(self) -> tuple[float, float]:
@@ -82,13 +99,33 @@ class RangeSlider(QWidget):
         else:
             self._active = "low" if dl < dh else "high"
         self._drag_to(x)
+        self.dragStarted.emit(self._active_name())
+        self.update()
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
         if self._active:
             self._drag_to(event.position().x())
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if self._active is None:
+            return
+        name = self._active_name()
         self._active = None
+        self.update()
+        self.dragFinished.emit(name)
+
+    def _active_name(self) -> str:
+        return "start" if self._active == "low" else "end"
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        self._hover = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self._hover = False
+        self.update()
+        super().leaveEvent(event)
 
     def _drag_to(self, x: float) -> None:
         value = self.x_to_value(x)
@@ -99,18 +136,15 @@ class RangeSlider(QWidget):
 
     # ---- painting
     def paintEvent(self, event) -> None:  # noqa: N802
+        th = theme.current()
         p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        pal = self.palette()
         cy = self.height() / 2
         xl, xh = self.value_to_x(self._low), self.value_to_x(self._high)
         left, right = self._track()
-        p.setPen(Qt.NoPen)
-        p.setBrush(pal.mid())
-        p.drawRoundedRect(QRectF(left, cy - 3, right - left, 6), 3, 3)
-        p.setBrush(pal.highlight())
-        p.drawRect(QRectF(xl, cy - 3, max(xh - xl, 0), 6))
-        p.setPen(QColor(0, 0, 0, 90))
-        p.setBrush(pal.button() if not self.isEnabled() else pal.light())
-        for x in (xl, xh):
-            p.drawRoundedRect(QRectF(x - HANDLE_W / 2, 4, HANDLE_W, self.height() - 8), 3, 3)
+        enabled = self.isEnabled()
+        theme.paint_groove(p, left, right, cy, th, enabled, height=8.0)
+        theme.paint_fill(p, xl, xh, cy, th, enabled, height=8.0)
+        for name, x in (("low", xl), ("high", xh)):
+            hot = self._active == name or (self._hover and self._active is None)
+            theme.paint_handle(p, QPointF(x, cy), th, HANDLE_R, hot=self._active == name or hot,
+                               enabled=enabled)
