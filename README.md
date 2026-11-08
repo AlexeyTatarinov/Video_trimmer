@@ -29,3 +29,6 @@ See `spec.md` (Russian) for the specification.
 
 ## ffmpeg on Windows (manual)
 If `run.bat` cannot download ffmpeg, download `ffmpeg-master-latest-win64-gpl.zip` from the BtbN FFmpeg-Builds releases on GitHub, unpack it and copy the `bin` folder to `tools\ffmpeg\bin` next to `run.bat` (the file `tools\ffmpeg\bin\ffmpeg.exe` must exist).
+
+## Icon
+The app icon (original design) lives in `src/video_trimmer/assets/` (`icon.png`, `icon.ico`) and is installed for every window at startup. To regenerate it: `python scripts/make_icon.py`.

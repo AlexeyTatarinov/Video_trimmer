@@ -9,7 +9,10 @@ def main() -> int:
 
     from video_trimmer.ui.main_window import MainWindow
 
+    from video_trimmer import icon
+
     app = QApplication(sys.argv)
+    icon.install(app)
     window = MainWindow()
     window.show()
     return app.exec()
