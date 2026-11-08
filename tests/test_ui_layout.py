@@ -104,7 +104,7 @@ def make_window(app, monkeypatch, tmp_path):
             src.write_bytes(b"x")
             w.open_file(str(src))
             assert wait_for(lambda: w.has_video() and not w.is_busy())
-            for i in range(segments - 1):
+            for i in range(segments):
                 w.range_slider.setValues(3600.0 * 9 + i, 3600.0 * 9 + 3599.0 - i)
                 w.add_segment()
         pump()
@@ -331,11 +331,12 @@ def test_card_width_covers_the_longest_text(make_window):
 def test_card_click_selects_and_highlights(make_window):
     w = make_window("en", "light", (1366, 768), segments=4)
     cards = w.segment_list.cards()
-    assert w.segment_list.currentRow() == 3
+    assert w.segment_list.currentRow() == -1            # v0.2.3: no card is selected after Add
     from PySide6.QtTest import QTest
     QTest.mouseClick(cards[1], Qt.LeftButton)
     assert w.segment_list.currentRow() == 1
     assert cards[1].is_selected() and not cards[3].is_selected()
+    assert not any(cards[i].is_selected() for i in (0, 2, 3))
     for th in THEMES:
         w.set_theme(th)
         pump()
@@ -357,9 +358,10 @@ def test_card_delete_button_removes_that_segment(make_window):
             pump()
     assert len(w.segments()) == 1
     last = w.segment_list.cards()[0]
-    assert not last.delete_button.isEnabled()          # the cross is disabled on the only segment
-    w.remove_segment_at(0)
-    assert len(w.segments()) == 1
+    assert last.delete_button.isEnabled()              # v0.2.3: the cross works on the only card too
+    QTest.mouseClick(last.delete_button, Qt.LeftButton)
+    pump()
+    assert w.segments() == []
 
 
 # ------------------------------------------------------------------ (e) real video: 4K and portrait

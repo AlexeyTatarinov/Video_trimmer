@@ -72,7 +72,7 @@ def make(app, fake, monkeypatch, tmp_path):
         src.write_bytes(b"x")
         w.open_file(str(src))
         assert wait_for(lambda: w.has_video() and not w.is_busy())
-        for i in range(segments - 1):
+        for i in range(segments):
             w.range_slider.setValues(10.0 * (i + 1), 10.0 * (i + 1) + 5)
             w.add_segment()
         pump()
@@ -292,14 +292,16 @@ def test_mode_tooltips_and_info_popup(make, lang):
 
 # ------------------------------------------------------------------ cards: delete / clear
 
-def test_cross_deletes_and_is_disabled_on_the_last_card(make):
+def test_cross_deletes_any_card_including_the_last_one(make):
     w = make((1366, 768), segments=3)
     assert all(c.delete_button.isEnabled() for c in w.segment_list.cards())
     QTest.mouseClick(w.segment_list.card(1).delete_button, Qt.LeftButton)
     assert len(w.segments()) == 2
     w.segment_list.card(0).delete_button.click()
     assert len(w.segments()) == 1
-    assert not w.segment_list.card(0).delete_button.isEnabled()
+    assert w.segment_list.card(0).delete_button.isEnabled()      # v0.2.3: also on the only card
+    w.segment_list.card(0).delete_button.click()
+    assert w.segments() == []
 
 
 def test_remove_button_is_gone(make):
@@ -310,25 +312,23 @@ def test_remove_button_is_gone(make):
 
 
 def test_clear_all_with_one_segment_needs_no_confirmation(make, monkeypatch):
-    w = make((1366, 768))
+    w = make((1366, 768), segments=1)
     asked = []
     monkeypatch.setattr(w, "_confirm_clear", lambda: asked.append(1) or True)
-    w.range_slider.setValues(5, 20)
     w.clear_button.click()
     assert asked == []
-    assert w.segments() == [(0.0, 600.0)]
+    assert w.segments() == []
 
 
-def test_clear_all_asks_and_resets_to_one_full_segment(make, monkeypatch):
+def test_clear_all_asks_and_empties_the_list(make, monkeypatch):
     w = make((1366, 768), segments=4)
     asked = []
     monkeypatch.setattr(w, "_confirm_clear", lambda: asked.append(1) or True)
     w.clear_button.click()
     assert asked == [1]
-    assert w.segments() == [(0.0, 600.0)]
-    assert w.segment_list.count() == 1 and w.segment_list.currentRow() == 0
-    assert w.range_slider.low() == 0 and w.range_slider.high() == 600
-    assert not w.segment_list.card(0).delete_button.isEnabled()
+    assert w.segments() == []
+    assert w.segment_list.count() == 0 and w.segment_list.currentRow() == -1
+    assert w.range_slider.low() == 0 and w.range_slider.high() == 600     # the draft: whole file
 
 
 def test_clear_all_declined_keeps_everything(make, monkeypatch):
@@ -351,7 +351,7 @@ def test_clear_all_confirmation_is_a_yes_no_question(make, monkeypatch):
     w.clear_segments()
     assert seen["buttons"] == QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
     assert "3" in seen["text"]
-    assert len(w.segments()) == 1
+    assert len(w.segments()) == 0
 
 
 # ------------------------------------------------------------------ cards: reordering
@@ -360,11 +360,10 @@ RANGES = [(10.0, 15.0), (20.0, 25.0), (30.0, 35.0), (40.0, 45.0)]
 
 
 def four(make):
-    w = make((1366, 768), segments=1)
-    for i, r in enumerate(RANGES):
-        w.range_slider.setValues(*r)         # edits the selected segment
-        if i < len(RANGES) - 1:
-            w.add_segment()                  # a copy that becomes the selected one
+    w = make((1366, 768), segments=0)
+    for r in RANGES:
+        w.range_slider.setValues(*r)         # the draft ...
+        w.add_segment()                      # ... becomes a new card
     pump()
     assert w.segments() == RANGES
     return w

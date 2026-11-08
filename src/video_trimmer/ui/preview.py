@@ -27,10 +27,19 @@ if MULTIMEDIA_AVAILABLE:
         decides how much room the video gets.
         """
 
+        doubleClicked = Signal()
+
         def __init__(self, parent: QWidget | None = None) -> None:
             super().__init__(parent)
             self.setMinimumSize(VIDEO_MIN_SIZE)
             self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
+
+        def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
+            if event.button() == Qt.LeftButton:
+                self.doubleClicked.emit()
+                event.accept()
+            else:
+                super().mouseDoubleClickEvent(event)
 
         def sizeHint(self) -> QSize:  # noqa: N802
             return QSize(VIDEO_HINT_SIZE)
@@ -84,6 +93,22 @@ class PreviewPlayer(QObject):
             self.video_widget.setAlignment(Qt.AlignCenter)
             self.video_widget.setMinimumSize(VIDEO_MIN_SIZE)
             self.video_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
+
+    # ---- video output (v0.2.3: the full-screen widget takes the picture over and gives it back)
+    def set_video_sink(self, sink) -> None:
+        """Send the frames to ``sink`` (a QVideoSink) instead of the preview widget."""
+        if self._player is not None:
+            self._player.setVideoSink(sink)
+
+    def restore_video_output(self) -> None:
+        """Send the frames to the preview widget again."""
+        if self._player is not None:
+            self._player.setVideoSink(self.video_widget.videoSink())
+
+    def refresh_frame(self) -> None:
+        """Re-render the current frame of a paused player (e.g. in a newly attached output)."""
+        if self._player is not None and self._player.playbackState() == QMediaPlayer.PausedState:
+            self._player.setPosition(self._player.position())
 
     def _on_state(self, state) -> None:
         self._playing = state == QMediaPlayer.PlayingState

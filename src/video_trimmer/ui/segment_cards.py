@@ -47,6 +47,7 @@ class SegmentCard(QFrame):
         self._hover = False
         self._press_global: QPoint | None = None
         self._dragging = False
+        self._toggle_pending = False
         self.setFocusPolicy(Qt.StrongFocus)
         self.setAttribute(Qt.WA_Hover, True)
         self.setCursor(Qt.PointingHandCursor)
@@ -111,7 +112,11 @@ class SegmentCard(QFrame):
         if event.button() == Qt.LeftButton:
             self.setFocus(Qt.MouseFocusReason)
             self._press_global = event.globalPosition().toPoint()
-            self.clicked.emit(self._index)
+            # An unselected card is selected at once (so it can be dragged right away). A click on the
+            # selected card is a toggle: it counts only on release, when no drag has started.
+            self._toggle_pending = self._selected
+            if not self._selected:
+                self.clicked.emit(self._index)
             event.accept()
         else:
             super().mousePressEvent(event)
@@ -131,16 +136,20 @@ class SegmentCard(QFrame):
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
         was_dragging = self._dragging
-        self._press_global, self._dragging = None, False
+        toggle = self._toggle_pending and event.button() == Qt.LeftButton
+        self._press_global, self._dragging, self._toggle_pending = None, False, False
         if was_dragging and event.button() == Qt.LeftButton:
             self.dragFinished.emit(event.globalPosition().toPoint(), False)
+            event.accept()
+        elif toggle and self.rect().contains(event.position().toPoint()):
+            self.clicked.emit(self._index)
             event.accept()
         else:
             super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
         if event.key() == Qt.Key_Escape and self._dragging:
-            self._press_global, self._dragging = None, False
+            self._press_global, self._dragging, self._toggle_pending = None, False, False
             self.dragFinished.emit(QPoint(), True)
         elif event.key() in (Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter):
             self.clicked.emit(self._index)
@@ -269,7 +278,7 @@ class SegmentCardList(QScrollArea):
             c.deleteLater()
         while len(self._cards) < len(segments):
             c = SegmentCard(len(self._cards), self.widget())
-            c.clicked.connect(self.setCurrentRow)
+            c.clicked.connect(self._card_clicked)
             c.deleteRequested.connect(self.removeRequested)
             c.dragStarted.connect(self._drag_started)
             c.dragMoved.connect(self._drag_moved)
@@ -280,9 +289,10 @@ class SegmentCardList(QScrollArea):
         for i, (s, e) in enumerate(segments):
             self._cards[i].set_segment(i, s, e, language)
             self._cards[i].set_selected(i == row)
-            self._cards[i].delete_button.setEnabled(self._removable and len(segments) > 1)
+            self._cards[i].delete_button.setEnabled(self._removable)
         self._current = row if 0 <= row < len(segments) else -1
         self._adjust_height()
+        self.viewport().update()
 
     def update_segment(self, row: int, segment: tuple[float, float]) -> None:
         if 0 <= row < len(self._cards):
@@ -291,7 +301,11 @@ class SegmentCardList(QScrollArea):
     def set_removable(self, removable: bool) -> None:
         self._removable = removable
         for c in self._cards:
-            c.delete_button.setEnabled(removable and len(self._cards) > 1)
+            c.delete_button.setEnabled(removable)
+
+    def _card_clicked(self, row: int) -> None:
+        """A click selects a card; a click on the selected card selects nothing (draft mode)."""
+        self.setCurrentRow(-1 if row == self._current else row)
 
     # ---- drag and drop reordering
     def is_dragging(self) -> bool:
@@ -421,3 +435,9 @@ class SegmentCardList(QScrollArea):
         p.setBrush(with_alpha(th.input_bg, 0.55))
         p.setPen(QPen(with_alpha(th.input_border, 0.8), 1.0))
         p.drawRoundedRect(QRectF(self.viewport().rect()).adjusted(0.5, 0.5, -0.5, -0.5), 16, 16)
+        if not self._cards:  # a quiet hint instead of an empty well
+            p.setPen(th.text_dim)
+            rect = self.viewport().rect().adjusted(16, 0, -16, 0)
+            text = p.fontMetrics().elidedText(i18n.tr(self._language, "segments_empty"),
+                                              Qt.ElideRight, rect.width())
+            p.drawText(rect, Qt.AlignVCenter | Qt.AlignLeft, text)
