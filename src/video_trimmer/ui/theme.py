@@ -223,6 +223,8 @@ QScrollArea#segmentList, QScrollArea#segmentList > QWidget, QWidget#segmentInner
 QLabel#cardIndex {{ color: {css(th.accent)}; font-weight: 700; font-size: 14px; }}
 QLabel#cardIndex[selected="true"] {{ color: {css(th.text)}; }}
 QLabel#cardRange {{ font-weight: 600; }}
+QLabel#editNote {{ color: {css(th.accent)}; font-weight: 700; }}
+QLabel#toast {{ color: {css(th.text)}; font-size: 16px; font-weight: 600; }}
 QLabel#cardDim {{ color: {css(th.text_dim)}; font-size: 12px; }}
 QProgressBar {{
     background: {css(th.track)}; border: 1px solid {css(th.track_border)};
@@ -385,7 +387,7 @@ def paint_handle(p: QPainter, center: QPointF, th: Theme, radius: float = 9.0, h
 
 
 def paint_icon(p: QPainter, kind: str, rect: QRectF, color: QColor, muted: bool = False) -> None:
-    """Simple vector icons: play, pause, speaker (muted via flag), sun, moon, folder."""
+    """Simple vector icons: play, pause, speaker (muted via flag), cross, sun, moon, folder."""
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
     c = rect.center()
@@ -459,6 +461,11 @@ def paint_icon(p: QPainter, kind: str, rect: QRectF, color: QColor, muted: bool 
         p.setPen(Qt.NoPen)
         p.setBrush(color)
         p.drawPath(path.subtracted(hole))
+    elif kind == "cross":
+        d = s * 0.26
+        p.setPen(QPen(color, max(2.0, s * 0.11), Qt.SolidLine, Qt.RoundCap))
+        p.drawLine(QPointF(c.x() - d, c.y() - d), QPointF(c.x() + d, c.y() + d))
+        p.drawLine(QPointF(c.x() - d, c.y() + d), QPointF(c.x() + d, c.y() - d))
     elif kind == "question":
         from PySide6.QtGui import QFont
         font = QFont(p.font())

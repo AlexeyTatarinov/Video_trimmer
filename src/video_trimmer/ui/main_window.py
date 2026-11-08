@@ -16,6 +16,10 @@ from video_trimmer.ui.preview import PreviewPlayer
 from video_trimmer.ui.range_slider import RangeSlider
 from video_trimmer.ui.popups import ModeInfoPopup, SettingsPopup
 from video_trimmer.ui.segment_cards import SegmentCardList
+try:  # needs QtMultimedia (PySide6-Addons)
+    from video_trimmer.ui.fullscreen import FullscreenController
+except ImportError:  # pragma: no cover - depends on installation
+    FullscreenController = None
 from video_trimmer.ui.widgets import (
     ElidedLabel, GlassBackground, GlassButton, GlassPanel, GlassSlider, StatusProgressBar,
 )
@@ -30,6 +34,8 @@ TIME_FIELD_SIZE = QSize(116, 32)
 class MainWindow(QMainWindow):
     # Relay used to run worker callbacks on the GUI thread (queued across threads).
     _gui_call = Signal(object)
+    displayTimeChanged = Signal(int)   # ms shown by the position slider / label (also while paused)
+    segmentCreated = Signal(int)       # number (1-based) of the card that "Add" has just created
 
     def __init__(self, language: str | None = None, settings=None) -> None:
         super().__init__()
@@ -44,6 +50,8 @@ class MainWindow(QMainWindow):
         self._segments: list[tuple[float, float]] = []
         self._syncing = False
         self._busy = False
+        self._external_drag = False   # a range handle is being dragged in the full-screen footer
+        self._fullscreen = None
         self._thread = None
         self._worker: Worker | None = None
         self._status_key = "ready"
@@ -54,6 +62,8 @@ class MainWindow(QMainWindow):
         self.resize(self._initial_size().expandedTo(MIN_WINDOW_SIZE))
         self._build_ui()
         self._connect_player()
+        if FullscreenController is not None:
+            self._fullscreen = FullscreenController(self)
         self.retranslate()
         self._update_enabled()
         theme.apply_theme(self, self.theme_name)
@@ -103,6 +113,8 @@ class MainWindow(QMainWindow):
         video_panel.body.setContentsMargins(8, 8, 8, 8)
         self.player = PreviewPlayer(self)
         self.video_widget = self.player.video_widget
+        if hasattr(self.video_widget, "doubleClicked"):
+            self.video_widget.doubleClicked.connect(self.toggle_fullscreen)
         self.video_widget.setAutoFillBackground(True)
         pal = self.video_widget.palette()
         pal.setColor(pal.ColorRole.Window, QColor(8, 8, 14))
@@ -179,11 +191,16 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.start_label)
         controls.addWidget(self.start_edit)
         controls.addWidget(self.set_start_button)
-        controls.addSpacing(10)
+        controls.addSpacing(4)
         controls.addWidget(self.end_label)
         controls.addWidget(self.end_edit)
         controls.addWidget(self.set_end_button)
-        controls.addStretch(1)
+        # "Editing segment #N": it lives in the free space of this row (it takes the place of the
+        # stretch and is elided when narrow), so showing it never changes the geometry
+        self.edit_note = ElidedLabel()
+        self.edit_note.setObjectName("editNote")
+        self.edit_note.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
+        controls.addWidget(self.edit_note, 1)
         controls.addWidget(self.add_button)
         controls.addWidget(self.clear_button)
         rl.addLayout(controls)
@@ -282,6 +299,7 @@ class MainWindow(QMainWindow):
         self.set_end_button.setToolTip(self.t("set_end_tip"))
         self.add_button.setText(self.t("add_segment"))
         self.add_button.setToolTip(self.t("add_segment_tip"))
+        self.video_widget.setToolTip(self.t("fullscreen_tip"))
         self.clear_button.setText(self.t("clear_all"))
         self.clear_button.setToolTip(self.t("clear_all_tip"))
         self.segments_box.setToolTip(self.t("segments"))
@@ -294,7 +312,11 @@ class MainWindow(QMainWindow):
         self.info_popup.set_language(self.language)
         self.save_button.setText(self.t("save"))
         self._refresh_segment_items()
+        self._update_edit_note()
+        self._update_save_tip()
         self._show_status(self._status_key, **self._status_kwargs)
+        if self._fullscreen is not None:
+            self._fullscreen.retranslate()
 
     def show_settings(self) -> None:
         self.settings_popup.sync(self.language, self.theme_name)
@@ -326,12 +348,20 @@ class MainWindow(QMainWindow):
 
     def _update_enabled(self) -> None:
         loaded = self.has_video() and not self._busy
-        for w in (self.save_button, self.add_button, self.clear_button, self.set_start_button,
+        for w in (self.add_button, self.clear_button, self.set_start_button,
                   self.set_end_button, self.start_edit, self.end_edit, self.range_slider,
                   self.segment_list, self.play_button, self.position_slider):
             w.setEnabled(loaded)
+        self.save_button.setEnabled(loaded and bool(self._segments))   # nothing to save without cards
+        self._update_save_tip()
         self.segment_list.set_removable(loaded)
         self.open_button.setEnabled(not self._busy)
+        if self._fullscreen is not None:
+            self._fullscreen.sync_enabled()
+
+    def _update_save_tip(self) -> None:
+        explain = self.has_video() and not self._segments
+        self.save_button.setToolTip(self.t("save_disabled_tip") if explain else "")
 
     def _update_play_text(self) -> None:
         playing = self.player.is_playing()
@@ -344,6 +374,8 @@ class MainWindow(QMainWindow):
             return
         self.theme_name = name
         theme.apply_theme(self, name)
+        if self._fullscreen is not None:
+            self._fullscreen.apply_theme(name)
         theme.save_theme_name(self._settings, name)
         self.settings_popup.sync(self.language, self.theme_name)
 
@@ -357,6 +389,8 @@ class MainWindow(QMainWindow):
 
     def _update_mute_button(self) -> None:
         self.mute_button.setToolTip(self.t("unmute" if self.mute_button.isChecked() else "mute"))
+        if self._fullscreen is not None and self._fullscreen.window is not None:
+            self._fullscreen.window.footer.mute_button.setToolTip(self.mute_button.toolTip())
 
     def _on_volume_changed(self, value: int) -> None:
         self.player.set_volume(value / 100.0)
@@ -403,15 +437,22 @@ class MainWindow(QMainWindow):
             self._error(self.t("empty_duration"))
             return
         self._src, self._duration = path, float(info.duration)
-        self._segments = [(0.0, self._duration)]
-        self.range_slider.setMaximum(self._duration)
+        self._segments = []                       # no cards: the sliders hold the draft (whole file)
+        self.segment_list.setCurrentRow(-1)
+        self._syncing = True
+        try:
+            self.range_slider.setMaximum(self._duration)
+            self.range_slider.setValues(0.0, self._duration)
+            self.start_edit.setText(format_time(0.0))
+            self.end_edit.setText(format_time(self._duration))
+        finally:
+            self._syncing = False
         self.position_slider.setRange(0, int(self._duration * 1000))
         self.player.set_source(path)
         self.progress_bar.setValue(0)
         self._show_status("ready")
         self._refresh_segment_items(select=-1)
-        self.segment_list.setCurrentRow(0)
-        self._select_row(0)
+        self._update_edit_note()
         self._update_enabled()
 
     def _on_player_error(self, *_args) -> None:
@@ -433,6 +474,7 @@ class MainWindow(QMainWindow):
         self.position_slider.setValue(ms)
         self.position_slider.blockSignals(False)
         self.position_label.setText(format_time(ms / 1000.0))
+        self.displayTimeChanged.emit(int(ms))
 
     def preview_at(self, seconds: float, immediate: bool = False) -> None:
         """Show the video frame at ``seconds`` (one preview, jumps to the handle being edited)."""
@@ -454,42 +496,59 @@ class MainWindow(QMainWindow):
         self.preview_at(self._handle_value(which), immediate=True)
 
     def _on_player_position(self, ms: int) -> None:
-        if self.range_slider.is_dragging():
+        if self.range_slider.is_dragging() or self._external_drag:
             return  # the displayed time follows the handle being dragged
         if not self.position_slider.isSliderDown():
             self.position_slider.setValue(ms)
         self.position_label.setText(format_time(ms / 1000.0))
+        self.displayTimeChanged.emit(int(ms))
 
     # ------------------------------------------------------------------ segments
     def _refresh_segment_items(self, select: int | None = None) -> None:
         self.segment_list.set_segments(self._segments, self.language, select)
 
-    def _select_row(self, row: int, preview: bool = False) -> None:
-        """Load segment ``row`` into the slider and time fields."""
-        if not 0 <= row < len(self._segments):
-            return
-        s, e = self._segments[row]
+    def editing_row(self) -> int:
+        """Row of the card being edited, or -1 in draft mode (no card selected)."""
+        row = self.segment_list.currentRow()
+        return row if 0 <= row < len(self._segments) else -1
+
+    def _update_edit_note(self) -> None:
+        row = self.editing_row()
+        self.edit_note.setText(self.t("editing_segment", n=row + 1) if row >= 0 else "")
+
+    def _load_range(self, start: float, end: float, preview: bool = False) -> None:
+        """Put a range into the slider and the time fields without editing any card."""
         self._syncing = True
         try:
-            self.range_slider.setValues(s, e)
-            self.start_edit.setText(format_time(s))
-            self.end_edit.setText(format_time(e))
+            self.range_slider.setValues(start, end)
+            self.start_edit.setText(format_time(start))
+            self.end_edit.setText(format_time(end))
         finally:
             self._syncing = False
         if preview:
-            self.preview_at(s, immediate=True)
+            self.preview_at(start, immediate=True)
+
+    def _select_row(self, row: int, preview: bool = False) -> None:
+        """Load segment ``row`` into the slider and time fields."""
+        if 0 <= row < len(self._segments):
+            self._load_range(*self._segments[row], preview=preview)
 
     def _on_row_changed(self, row: int) -> None:
-        self._select_row(row, preview=True)
+        """A card was selected (editing mode) or the selection was cleared (draft mode)."""
+        self._update_edit_note()
+        if row >= 0:
+            self._select_row(row, preview=True)
 
     def _on_range_changed(self, low: float, high: float) -> None:
-        row = self.segment_list.currentRow()
-        if self._syncing or not 0 <= row < len(self._segments):
+        if self._syncing:
             return
-        self._segments[row] = (low, high)
         self.start_edit.setText(format_time(low))
         self.end_edit.setText(format_time(high))
-        self.segment_list.update_segment(row, self._segments[row])
+        row = self.editing_row()
+        if row >= 0:                       # editing mode: the slider edits that card ...
+            self._segments[row] = (low, high)
+            self.segment_list.update_segment(row, self._segments[row])
+        # ... draft mode: it only moves the draft (no card changes)
 
     def _edit_finished(self, is_start: bool) -> None:
         edit = self.start_edit if is_start else self.end_edit
@@ -510,31 +569,37 @@ class MainWindow(QMainWindow):
         self.range_slider.setHigh(self.current_position())
 
     def add_segment(self) -> None:
-        """Append a copy of the selected segment (overlaps and duplicates are allowed)."""
-        if not self._segments:
+        """Create a NEW card from the current slider range (overlaps and repeats are allowed).
+
+        No card is selected afterwards, so moving the slider never changes an existing card.
+        """
+        if not self.has_video() or self._busy:
             return
-        row = self.segment_list.currentRow()
-        if not 0 <= row < len(self._segments):
-            row = len(self._segments) - 1
-        self._segments.append(self._segments[row])
-        new_row = len(self._segments) - 1
-        self._refresh_segment_items(select=new_row)
-        self._select_row(new_row)
-        self.segment_list.ensureWidgetVisible(self.segment_list.card(new_row), 4, 4)
+        low, high = self.range_slider.low(), self.range_slider.high()
+        if high <= low:
+            self._show_status("empty_segment")
+            return
+        self._segments.append((low, high))
+        number = len(self._segments)
+        self._refresh_segment_items(select=-1)
+        self._update_edit_note()
+        self.segment_list.ensureWidgetVisible(self.segment_list.card(number - 1), 4, 4)
         self._update_enabled()
+        self._show_status("segment_created", n=number)
+        self.segmentCreated.emit(number)
 
     def remove_segment_at(self, row: int) -> None:
-        """Remove segment ``row`` (a card's cross); the last remaining one cannot be removed."""
-        if len(self._segments) <= 1 or not 0 <= row < len(self._segments) or self._busy:
+        """Remove card ``row`` (its cross). Deleting the edited card ends editing mode."""
+        if not 0 <= row < len(self._segments) or self._busy:
             return
-        current = self.segment_list.currentRow()
+        current = self.editing_row()
         del self._segments[row]
-        if row < current:
-            new_row = current - 1
+        if current < 0 or row == current:
+            new_row = -1
         else:
-            new_row = min(current if row != current else row, len(self._segments) - 1)
+            new_row = current - 1 if row < current else current
         self._refresh_segment_items(select=new_row)
-        self._select_row(new_row, preview=(row == current))
+        self._update_edit_note()
         self._update_enabled()
 
     def move_segment(self, src: int, dst: int) -> None:
@@ -546,13 +611,15 @@ class MainWindow(QMainWindow):
         self._segments.insert(dst, self._segments.pop(src))
         self._refresh_segment_items(select=dst)
         self._select_row(dst)
+        self._update_edit_note()
         if focused:
             self.segment_list.card(dst).setFocus()
         self.segment_list.ensureWidgetVisible(self.segment_list.card(dst), 4, 4)
 
     def move_selected(self, delta: int) -> None:
-        row = self.segment_list.currentRow()
-        self.move_segment(row, row + delta)
+        row = self.editing_row()
+        if row >= 0:
+            self.move_segment(row, row + delta)
 
     def _confirm_clear(self) -> bool:
         """Ask before throwing several segments away (tests replace this method)."""
@@ -564,15 +631,50 @@ class MainWindow(QMainWindow):
         return answer == QMessageBox.StandardButton.Yes
 
     def clear_segments(self) -> None:
-        """Reset the list to one segment covering the whole file (asks if there are several)."""
+        """Remove all cards (asks if there are several); the draft goes back to the whole file."""
         if self._busy or not self.has_video():
             return
         if len(self._segments) > 1 and not self._confirm_clear():
             return
-        self._segments = [(0.0, self._duration)]
-        self._refresh_segment_items(select=0)
-        self._select_row(0, preview=True)
+        self._segments = []
+        self._refresh_segment_items(select=-1)
+        self._load_range(0.0, self._duration, preview=True)
+        self._update_edit_note()
         self._update_enabled()
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        # Esc leaves editing mode (back to the draft); the card keeps its range.
+        if event.key() == Qt.Key_Escape and self.editing_row() >= 0:
+            self.segment_list.setCurrentRow(-1)
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    # ------------------------------------------------------------------ full screen
+    @property
+    def _fs(self):
+        """The full-screen window if it has been created, else None."""
+        return self._fullscreen.window if self._fullscreen is not None else None
+
+    def fullscreen_window(self):
+        return self._fullscreen.ensure_window() if self._fullscreen is not None else None
+
+    def is_fullscreen(self) -> bool:
+        return self._fullscreen is not None and self._fullscreen.active
+
+    def enter_fullscreen(self) -> None:
+        if self._fullscreen is not None:
+            self._fullscreen.enter()
+
+    def exit_fullscreen(self) -> None:
+        if self._fullscreen is not None:
+            self._fullscreen.exit()
+
+    def toggle_fullscreen(self) -> None:
+        if self.is_fullscreen():
+            self.exit_fullscreen()
+        else:
+            self.enter_fullscreen()
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
         # Alt+Left / Alt+Right move the selected card. The scroll area would otherwise swallow
@@ -589,7 +691,7 @@ class MainWindow(QMainWindow):
         return QFileDialog.getExistingDirectory(self, self.t("save_dialog_title"), str(default))
 
     def save(self) -> None:
-        if self._busy or not self.has_video():
+        if self._busy or not self.has_video() or not self._segments:
             return
         src, mode = self._src, self.mode()
         try:
@@ -636,6 +738,8 @@ class MainWindow(QMainWindow):
         self._update_enabled()
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        if self._fullscreen is not None:
+            self._fullscreen.shutdown()      # never leave a full-screen window behind
         self.player.stop()
         if self._thread is not None and self._thread.isRunning():
             self._thread.wait()

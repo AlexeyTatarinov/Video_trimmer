@@ -512,8 +512,8 @@ def test_window_default_language_is_english(win):
     assert win.save_button.text() == i18n.tr("en", "save")
 
 
-def test_default_single_segment_covers_whole_file(win):
-    assert win.segments() == [(0.0, 60.0)]
+def test_default_list_is_empty_and_draft_covers_whole_file(win):
+    assert win.segments() == []
     assert win.range_slider.high() == 60.0
     assert win.start_edit.text() == "00:00.000"
     assert win.end_edit.text() == "01:00.000"
@@ -526,31 +526,29 @@ def test_controls_disabled_without_video(app, fake):
     w.close()
 
 
-def test_add_segment_copies_selected_and_is_always_possible(win):
+def test_add_segment_creates_new_cards_from_the_slider(win):
     win.range_slider.setValues(5, 20)
     win.add_segment()
-    assert win.segments() == [(5.0, 20.0), (5.0, 20.0)]   # duplicate is fine
-    assert win.segment_list.currentRow() == 1
+    assert win.segments() == [(5.0, 20.0)]
     win.range_slider.setValues(10, 30)                   # overlaps the first one: allowed
+    win.add_segment()
     assert win.segments() == [(5.0, 20.0), (10.0, 30.0)]
     win.segment_list.setCurrentRow(0)
-    win.add_segment()                                    # copies the selected (first) one
+    win.add_segment()                                    # explicit second press on the same range
     assert win.segments()[-1] == (5.0, 20.0)
     assert len(win.segments()) == 3
     assert not any(kind == "error" for kind, _ in win.notes)
-    # adding works even when the segment covers the whole file (no free space needed)
+    # adding works even when the range covers the whole file (no free space needed)
     win.range_slider.setValues(0, 60)
     win.add_segment()
     assert len(win.segments()) == 4
     assert win.add_button.isEnabled()
 
 
-def test_remove_any_segment_except_last(win):
-    win.range_slider.setValues(0, 10)
-    win.add_segment()
-    win.range_slider.setValues(10, 20)
-    win.add_segment()
-    win.range_slider.setValues(20, 30)
+def test_remove_any_segment(win):
+    for r in ((0, 10), (10, 20), (20, 30)):
+        win.range_slider.setValues(*r)
+        win.add_segment()
     assert win.segments() == [(0, 10), (10, 20), (20, 30)]
     assert not hasattr(win, "remove_button")              # deleting is done with the card's cross
     assert all(c.delete_button.isEnabled() for c in win.segment_list.cards())
@@ -558,12 +556,14 @@ def test_remove_any_segment_except_last(win):
     assert win.segments() == [(10, 20), (20, 30)]
     win.segment_list.card(1).delete_button.click()
     assert win.segments() == [(10, 20)]
-    assert not win.segment_list.card(0).delete_button.isEnabled()
-    win.remove_segment_at(0)                              # the last remaining one stays
-    assert win.segments() == [(10, 20)]
+    assert win.segment_list.card(0).delete_button.isEnabled()    # also the last one (v0.2.3)
+    win.remove_segment_at(0)
+    assert win.segments() == []
 
 
 def test_segment_list_shows_each_segment(win):
+    win.range_slider.setValues(3, 4)
+    win.add_segment()
     win.range_slider.setValues(1, 2)
     win.add_segment()
     assert win.segment_list.count() == 2
@@ -571,12 +571,15 @@ def test_segment_list_shows_each_segment(win):
     assert "00:01.000" in card.range_label.text() and "00:02.000" in card.range_label.text()
     assert card.index_label.text() == "#2"
     assert "00:01.000" in card.duration_label.text()     # duration of the card
-    win.range_slider.setValues(1, 5)                      # editing updates the card text
+    win.segment_list.setCurrentRow(1)
+    win.range_slider.setValues(1, 5)                      # editing the selected card updates its text
     assert "00:05.000" in win.segment_list.card(1).range_label.text()
     assert i18n.tr("en", "segments") == "Segments (each is saved as a separate file)"
 
 
-def test_time_fields_update_segment(win):
+def test_time_fields_update_the_edited_segment(win):
+    win.add_segment()                                    # whole file
+    win.segment_list.setCurrentRow(0)
     win.end_edit.setText("0:30")
     win.end_edit.editingFinished.emit()
     assert win.segments() == [(0.0, 30.0)]
@@ -594,6 +597,9 @@ def test_take_current_position(win, monkeypatch):
     win.set_start_from_position()
     monkeypatch.setattr(win, "current_position", lambda: 40.0)
     win.set_end_from_position()
+    assert (win.range_slider.low(), win.range_slider.high()) == (12.0, 40.0)
+    assert win.segments() == []                          # a draft only
+    win.add_segment()
     assert win.segments() == [(12.0, 40.0)]
 
 
@@ -666,6 +672,7 @@ def test_selecting_a_segment_previews_its_start(win, preview_calls):
     win.range_slider.setValues(7, 9)
     win.add_segment()
     win.range_slider.setValues(20, 25)
+    win.add_segment()
     preview_calls.clear()
     win.segment_list.setCurrentRow(0)
     assert preview_calls[-1][0] == 7000
@@ -761,6 +768,7 @@ def test_save_passes_ranges_in_order_and_mode_and_reports_success(win, fake):
     win.range_slider.setValues(5, 10)
     win.add_segment()
     win.range_slider.setValues(8, 12)        # overlaps the previous one
+    win.add_segment()
     win.precise_radio.setChecked(True)
     win.save()
     assert wait_for(lambda: not win.is_busy() and fake.calls)
@@ -774,6 +782,7 @@ def test_save_passes_ranges_in_order_and_mode_and_reports_success(win, fake):
 
 
 def test_save_asks_for_folder_of_source_by_default(win, fake):
+    win.add_segment()
     win.save()
     assert wait_for(lambda: fake.calls)
     assert win.asked and win.asked[0] == str(core.Path(win.src_path).parent)
@@ -805,6 +814,7 @@ def test_save_cancelled_dialog_does_nothing(win, fake, monkeypatch):
 
 def test_trim_error_text_is_shown(win, fake):
     fake.error = "ffmpeg exploded politely"
+    win.add_segment()
     win.save()
     assert wait_for(lambda: win.notes and not win.is_busy())
     kind, text = win.notes[-1]
@@ -813,7 +823,9 @@ def test_trim_error_text_is_shown(win, fake):
 
 
 def test_invalid_segment_error_shown_without_starting_trim(win, fake):
-    win.range_slider.setValues(10, 10)  # empty segment is rejected by validate_segments
+    win._segments.append((10.0, 10.0))  # an empty segment is rejected by validate_segments
+    win._refresh_segment_items()
+    win._update_enabled()
     win.save()
     assert win.notes[-1][0] == "error"
     assert not win.is_busy()
@@ -822,6 +834,7 @@ def test_invalid_segment_error_shown_without_starting_trim(win, fake):
 
 def test_ui_uses_only_v02_core_functions(win, fake):
     # FakeCore makes validate_ranges / trim raise: a full save must still succeed
+    win.add_segment()
     win.save()
     assert wait_for(lambda: fake.calls and not win.is_busy())
     assert win.notes[-1][0] == "info"
