@@ -552,15 +552,14 @@ def test_remove_any_segment_except_last(win):
     win.add_segment()
     win.range_slider.setValues(20, 30)
     assert win.segments() == [(0, 10), (10, 20), (20, 30)]
-    win.segment_list.setCurrentRow(0)
-    assert win.remove_button.isEnabled()
-    win.remove_segment()                                  # the first can be removed too
+    assert not hasattr(win, "remove_button")              # deleting is done with the card's cross
+    assert all(c.delete_button.isEnabled() for c in win.segment_list.cards())
+    win.segment_list.card(0).delete_button.click()        # the first can be removed too
     assert win.segments() == [(10, 20), (20, 30)]
-    win.segment_list.setCurrentRow(1)
-    win.remove_segment()
+    win.segment_list.card(1).delete_button.click()
     assert win.segments() == [(10, 20)]
-    assert not win.remove_button.isEnabled()
-    win.remove_segment()                                  # the last remaining one stays
+    assert not win.segment_list.card(0).delete_button.isEnabled()
+    win.remove_segment_at(0)                              # the last remaining one stays
     assert win.segments() == [(10, 20)]
 
 
@@ -713,9 +712,9 @@ def test_default_theme_is_light_and_toggle_switches(win):
     win.toggle_theme()
     assert win.theme_name == "dark" and theme.current().name == "dark"
     assert win.styleSheet() != light_sheet
-    assert win.theme_button.iconKind() == "sun"
+    assert win.settings_popup.theme_buttons["dark"].isChecked()
     win.toggle_theme()
-    assert win.theme_name == "light" and win.theme_button.iconKind() == "moon"
+    assert win.theme_name == "light" and win.settings_popup.theme_buttons["light"].isChecked()
 
 
 def test_theme_choice_persists_between_runs(app, fake, isolated_settings):
@@ -837,14 +836,14 @@ def test_language_switch_changes_strings(win):
     win.set_language("uk")
     assert win.save_button.text() == i18n.tr("uk", "save")
     assert win.windowTitle() == i18n.tr("uk", "window_title")
-    assert win.theme_button.toolTip() == i18n.tr("uk", "theme_to_dark")
+    assert win.settings_button.toolTip() == i18n.tr("uk", "settings")
     win.set_language("en")
     assert win.save_button.text() == en_save
 
 
-def test_language_combo_switches_language(win):
-    idx = win.language_combo.findData("uk")
-    win.language_combo.setCurrentIndex(idx)
+def test_language_buttons_in_popup_switch_language(win):
+    win.settings_button.click()
+    win.settings_popup.language_buttons["uk"].click()
     assert win.language == "uk"
 
 

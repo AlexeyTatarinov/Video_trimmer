@@ -1,10 +1,14 @@
-"""Segment cards: fixed-size cards in a wrapping flow layout inside a small scroll area."""
+"""Segment cards: fixed-size cards in a wrapping flow layout inside a small scroll area.
+
+Cards can be reordered by dragging (an insertion indicator shows the drop place) and with
+Alt+Left / Alt+Right (handled by the main window for the selected card).
+"""
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QPainter, QPen
 from PySide6.QtWidgets import (
-    QFrame, QGridLayout, QScrollArea, QSizePolicy, QWidget,
+    QApplication, QFrame, QGraphicsOpacityEffect, QGridLayout, QScrollArea, QSizePolicy, QWidget,
 )
 
 from video_trimmer import i18n
@@ -17,8 +21,9 @@ from video_trimmer.ui.widgets import CloseButton, ElidedLabel
 DIGITS = "0123456789"
 SPACING = 8
 MARGIN = 4          # room around the cards (selection border, focus)
-VISIBLE_ROWS = 3    # the area grows up to this many rows, then it scrolls
-MIN_AREA_HEIGHT = 92
+VISIBLE_ROWS = 2    # the area grows up to this many rows, then it scrolls
+MIN_AREA_HEIGHT = 56
+INDICATOR_WIDTH = 4
 
 
 def _by_digit(template: str) -> list[str]:
@@ -31,12 +36,17 @@ class SegmentCard(QFrame):
 
     clicked = Signal(int)
     deleteRequested = Signal(int)
+    dragStarted = Signal(int)
+    dragMoved = Signal(QPoint)               # global position
+    dragFinished = Signal(QPoint, bool)      # global position, cancelled
 
     def __init__(self, index: int, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._index = index
         self._selected = False
         self._hover = False
+        self._press_global: QPoint | None = None
+        self._dragging = False
         self.setFocusPolicy(Qt.StrongFocus)
         self.setAttribute(Qt.WA_Hover, True)
         self.setCursor(Qt.PointingHandCursor)
@@ -57,9 +67,9 @@ class SegmentCard(QFrame):
         for lbl in (self.index_label, self.range_label, self.duration_label):
             lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         lay = QGridLayout(self)
-        lay.setContentsMargins(12, 8, 8, 8)
+        lay.setContentsMargins(12, 4, 6, 5)
         lay.setHorizontalSpacing(8)
-        lay.setVerticalSpacing(2)
+        lay.setVerticalSpacing(0)
         lay.addWidget(self.index_label, 0, 0, 2, 1, Qt.AlignVCenter)
         lay.addWidget(self.range_label, 0, 1)
         lay.addWidget(self.delete_button, 0, 2, Qt.AlignTop | Qt.AlignRight)
@@ -78,6 +88,7 @@ class SegmentCard(QFrame):
         self.range_label.setText(f"{format_time(start)} - {format_time(end)}")
         self.duration_label.setText(f"{i18n.tr(language, 'duration')}: {format_time(end - start)}")
         self.setToolTip(f"{i18n.tr(language, 'segment')} {index + 1}")
+        self.delete_button.setToolTip(i18n.tr(language, "delete_segment"))
         self.update()
 
     def is_selected(self) -> bool:
@@ -93,16 +104,45 @@ class SegmentCard(QFrame):
             self.update()
 
     # ---- interaction
+    def is_dragging(self) -> bool:
+        return self._dragging
+
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.LeftButton:
             self.setFocus(Qt.MouseFocusReason)
+            self._press_global = event.globalPosition().toPoint()
             self.clicked.emit(self._index)
             event.accept()
         else:
             super().mousePressEvent(event)
 
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._press_global is None:
+            super().mouseMoveEvent(event)
+            return
+        pos = event.globalPosition().toPoint()
+        if not self._dragging:
+            if (pos - self._press_global).manhattanLength() < QApplication.startDragDistance():
+                return
+            self._dragging = True
+            self.dragStarted.emit(self._index)
+        self.dragMoved.emit(pos)
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        was_dragging = self._dragging
+        self._press_global, self._dragging = None, False
+        if was_dragging and event.button() == Qt.LeftButton:
+            self.dragFinished.emit(event.globalPosition().toPoint(), False)
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
+
     def keyPressEvent(self, event) -> None:  # noqa: N802
-        if event.key() in (Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter):
+        if event.key() == Qt.Key_Escape and self._dragging:
+            self._press_global, self._dragging = None, False
+            self.dragFinished.emit(QPoint(), True)
+        elif event.key() in (Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter):
             self.clicked.emit(self._index)
         elif event.key() in (Qt.Key_Delete, Qt.Key_Backspace) and self.delete_button.isEnabled():
             self.deleteRequested.emit(self._index)
@@ -134,18 +174,38 @@ class SegmentCard(QFrame):
             pen_color, pen_w = th.input_border, 1.2
         p.setBrush(fill)
         p.setPen(QPen(pen_color, pen_w))
-        p.drawRoundedRect(r, 14, 14)
+        p.drawRoundedRect(r, 13, 13)
         if self.hasFocus():
             p.setBrush(Qt.NoBrush)
             p.setPen(QPen(with_alpha(th.accent, 0.9), 1.3, Qt.DashLine))
             p.drawRoundedRect(r.adjusted(-1, -1, 1, 1), 15, 15)
 
 
+class DropIndicator(QWidget):
+    """Thin accent bar showing where a dragged card will be inserted."""
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.hide()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        th = theme.current()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        p.setBrush(with_alpha(th.glow, 0.6))
+        p.drawRoundedRect(QRectF(self.rect()), 2, 2)
+        p.setBrush(th.accent)
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0, -0.5, 0), 2, 2)
+
+
 class SegmentCardList(QScrollArea):
-    """Cards flowing left to right and wrapping; height grows up to three rows, then scrolls."""
+    """Cards flowing left to right and wrapping; height grows up to two rows, then scrolls."""
 
     currentRowChanged = Signal(int)
     removeRequested = Signal(int)
+    moveRequested = Signal(int, int)    # (from row, to row) after a drag
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -166,6 +226,9 @@ class SegmentCardList(QScrollArea):
         self._flow = FlowLayout(inner, SPACING)
         self._flow.setContentsMargins(MARGIN, MARGIN, MARGIN, MARGIN)
         self.setWidget(inner)
+        self.drop_indicator = DropIndicator(inner)
+        self._drag_src = -1
+        self._drag_slot = -1
         self.setFixedHeight(MIN_AREA_HEIGHT)
 
     # ---- model-ish API (mirrors the old QListWidget calls)
@@ -208,6 +271,9 @@ class SegmentCardList(QScrollArea):
             c = SegmentCard(len(self._cards), self.widget())
             c.clicked.connect(self.setCurrentRow)
             c.deleteRequested.connect(self.removeRequested)
+            c.dragStarted.connect(self._drag_started)
+            c.dragMoved.connect(self._drag_moved)
+            c.dragFinished.connect(self._drag_finished)
             self._flow.addWidget(c)
             c.show()
             self._cards.append(c)
@@ -227,13 +293,81 @@ class SegmentCardList(QScrollArea):
         for c in self._cards:
             c.delete_button.setEnabled(removable and len(self._cards) > 1)
 
+    # ---- drag and drop reordering
+    def is_dragging(self) -> bool:
+        return self._drag_src >= 0
+
+    def slot_at(self, global_pos: QPoint) -> int:
+        """Insertion slot (0..count) for a global position: before the first card it precedes."""
+        p = self.widget().mapFromGlobal(global_pos)
+        for i, c in enumerate(self._cards):
+            g = c.geometry()
+            if p.y() < g.top():
+                return i
+            if p.y() <= g.bottom() and p.x() < g.center().x():
+                return i
+        return len(self._cards)
+
+    def _show_indicator(self, slot: int) -> None:
+        if not self._cards:
+            return
+        n = len(self._cards)
+        if slot < n:
+            g = self._cards[slot].geometry()
+            x = g.left() - SPACING // 2 - INDICATOR_WIDTH // 2
+        else:
+            g = self._cards[-1].geometry()
+            x = g.right() + 1 + SPACING // 2 - INDICATOR_WIDTH // 2
+        x = max(x, 0)
+        self.drop_indicator.setGeometry(QRect(x, g.top(), INDICATOR_WIDTH, g.height()))
+        self.drop_indicator.show()
+        self.drop_indicator.raise_()
+
+    def _drag_started(self, row: int) -> None:
+        self._drag_src, self._drag_slot = row, -1
+        effect = QGraphicsOpacityEffect(self._cards[row])
+        effect.setOpacity(0.55)
+        self._cards[row].setGraphicsEffect(effect)
+
+    def _drag_moved(self, global_pos: QPoint) -> None:
+        if self._drag_src < 0:
+            return
+        self._drag_slot = self.slot_at(global_pos)
+        self._show_indicator(self._drag_slot)
+        vp = self.viewport().mapFromGlobal(global_pos)
+        bar = self.verticalScrollBar()
+        if vp.y() < 14:
+            bar.setValue(bar.value() - 12)
+        elif vp.y() > self.viewport().height() - 14:
+            bar.setValue(bar.value() + 12)
+
+    def _drag_finished(self, global_pos: QPoint, cancelled: bool) -> None:
+        src = self._drag_src
+        slot = self.slot_at(global_pos) if not cancelled else -1
+        self._drag_src = self._drag_slot = -1
+        self.drop_indicator.hide()
+        if 0 <= src < len(self._cards):
+            self._cards[src].setGraphicsEffect(None)
+        if cancelled or src < 0 or slot < 0:
+            return
+        target = slot - 1 if slot > src else slot
+        if target != src:
+            self.moveRequested.emit(src, target)
+
     # ---- sizing
     def _extent(self) -> int:
         self.ensurePolished()
         return max(self.verticalScrollBar().sizeHint().width(), 10) + 4
 
     def _row_height(self) -> int:
-        return self._cards[0].sizeHint().height() if self._cards else 56
+        if self._cards:
+            return self._cards[0].sizeHint().height()
+        probe = SegmentCard(0, self.widget())      # measure a card without keeping it
+        probe.ensurePolished()
+        height = probe.sizeHint().height()
+        probe.setParent(None)
+        probe.deleteLater()
+        return height
 
     def _max_height(self) -> int:
         return VISIBLE_ROWS * self._row_height() + (VISIBLE_ROWS - 1) * SPACING + 2 * MARGIN
@@ -250,7 +384,7 @@ class SegmentCardList(QScrollArea):
         m = self._flow.contentsMargins()
         if m.right() != right:
             self._flow.setContentsMargins(MARGIN, MARGIN, right, MARGIN)
-        height = min(max(need, MIN_AREA_HEIGHT), top)
+        height = min(max(need, self._row_height() + 2 * MARGIN), top)
         if self.height() != height or self.minimumHeight() != height:
             self.setFixedHeight(height)
 
@@ -270,7 +404,9 @@ class SegmentCardList(QScrollArea):
 
     # ---- keyboard
     def keyPressEvent(self, event) -> None:  # noqa: N802
-        if event.key() in (Qt.Key_Left, Qt.Key_Up) and self._current > 0:
+        if event.modifiers() & Qt.AltModifier:
+            event.ignore()      # Alt+Left / Alt+Right reorder: handled by the main window
+        elif event.key() in (Qt.Key_Left, Qt.Key_Up) and self._current > 0:
             self.setCurrentRow(self._current - 1)
         elif event.key() in (Qt.Key_Right, Qt.Key_Down) and self._current < len(self._cards) - 1:
             self.setCurrentRow(self._current + 1)
