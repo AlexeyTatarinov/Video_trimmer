@@ -16,6 +16,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "set_end": "Use current position as end",
         "segments": "Segments (each is saved as a separate file)",
         "segment": "Segment",
+        "duration": "Duration",
         "add_segment": "Add segment",
         "remove_segment": "Remove",
         "mode": "Mode",
@@ -55,6 +56,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "set_end": "Текущая позиция как конец",
         "segments": "Фрагменты (каждый сохраняется отдельным файлом)",
         "segment": "Фрагмент",
+        "duration": "Длительность",
         "add_segment": "Добавить фрагмент",
         "remove_segment": "Удалить",
         "mode": "Режим",
@@ -94,6 +96,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "set_end": "Поточна позиція як кінець",
         "segments": "Фрагменти (кожен зберігається окремим файлом)",
         "segment": "Фрагмент",
+        "duration": "Тривалість",
         "add_segment": "Додати фрагмент",
         "remove_segment": "Видалити",
         "mode": "Режим",
@@ -123,6 +126,11 @@ STRINGS: dict[str, dict[str, str]] = {
         "volume": "Гучність",
     },
 }
+
+
+def all_texts(key: str) -> list[str]:
+    """The text for ``key`` in every language (used to size widgets for the longest one)."""
+    return [table[key] for table in STRINGS.values()]
 
 
 def tr(lang: str, key: str, **kwargs: object) -> str:

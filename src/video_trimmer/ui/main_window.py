@@ -3,22 +3,26 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal, Slot
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QSize, Qt, Signal, Slot
+from PySide6.QtGui import QColor, QGuiApplication
 from PySide6.QtWidgets import (
-    QButtonGroup, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QMainWindow, QMessageBox, QProgressBar, QVBoxLayout, QWidget,
+    QButtonGroup, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLineEdit,
+    QMainWindow, QMessageBox, QProgressBar, QScrollArea, QSizePolicy, QVBoxLayout,
 )
 
 from video_trimmer import core, i18n
 from video_trimmer.ui import theme
 from video_trimmer.ui.preview import PreviewPlayer
 from video_trimmer.ui.range_slider import RangeSlider
+from video_trimmer.ui.segment_cards import SegmentCardList
 from video_trimmer.ui.widgets import (
-    GlassBackground, GlassButton, GlassComboBox, GlassPanel, GlassSlider,
+    ElidedLabel, GlassBackground, GlassButton, GlassComboBox, GlassPanel, GlassSlider,
 )
 from video_trimmer.ui.timefmt import format_time, parse_time
 from video_trimmer.ui.worker import Worker, start_worker
+
+
+MIN_WINDOW_SIZE = QSize(760, 560)
 
 
 class MainWindow(QMainWindow):
@@ -42,7 +46,8 @@ class MainWindow(QMainWindow):
         self._status_kwargs: dict = {}
         self._gui_call.connect(self._invoke)
         self.setAcceptDrops(True)
-        self.resize(980, 900)
+        self.setMinimumSize(MIN_WINDOW_SIZE)
+        self.resize(self._initial_size().expandedTo(MIN_WINDOW_SIZE))
         self._build_ui()
         self._connect_player()
         self.retranslate()
@@ -52,24 +57,39 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ build
     def _build_ui(self) -> None:
+        # The whole interface lives in a scroll area: when the window (or screen) is smaller than
+        # the content, it scrolls instead of clipping or overlapping.
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setObjectName("mainScroll")
+        self.scroll_area.setFrameShape(QFrame.NoFrame)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         root = GlassBackground()
-        self.setCentralWidget(root)
+        self.scroll_area.setWidget(root)
+        self.setCentralWidget(self.scroll_area)
         lay = QVBoxLayout(root)
-        lay.setContentsMargins(22, 18, 22, 18)
-        lay.setSpacing(16)
+        lay.setContentsMargins(20, 14, 20, 16)
+        lay.setSpacing(12)
+        T = i18n.all_texts
 
         # header: title, open, language, theme
         header = QHBoxLayout()
         header.setSpacing(12)
-        self.title_label = QLabel()
+        self.title_label = ElidedLabel()
         self.title_label.setObjectName("title")
+        self.title_label.set_measure_texts(T("window_title"))
         self.open_button = GlassButton()
+        self.open_button.set_texts(T("open"))
         self.open_button.clicked.connect(self._choose_file)
-        self.language_label = QLabel()
+        self.language_label = ElidedLabel()
+        self.language_label.set_measure_texts(T("language"))
         self.language_combo = GlassComboBox()
         for code, name in i18n.LANGUAGES.items():
             self.language_combo.addItem(name, code)
         self.language_combo.setCurrentIndex(self.language_combo.findData(self.language))
+        self.language_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.language_combo.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.language_combo.currentIndexChanged.connect(
             lambda _i: self.set_language(self.language_combo.currentData()))
         self.theme_button = GlassButton(icon_kind="moon", diameter=42)
@@ -83,20 +103,21 @@ class MainWindow(QMainWindow):
         header.addWidget(self.theme_button)
         lay.addLayout(header)
 
-        # video
+        # video: the only stretching element (the widget ignores the video's native size)
         video_panel = GlassPanel(shadow=False)
+        video_panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         video_panel.body.setContentsMargins(10, 10, 10, 10)
         self.player = PreviewPlayer(self)
         self.video_widget = self.player.video_widget
-        self.video_widget.setMinimumHeight(280)
         self.video_widget.setAutoFillBackground(True)
         pal = self.video_widget.palette()
         pal.setColor(pal.ColorRole.Window, QColor(8, 8, 14))
         self.video_widget.setPalette(pal)
         video_panel.body.addWidget(self.video_widget, 1)
+        self.video_panel = video_panel
         lay.addWidget(video_panel, 1)
 
-        # transport: play, position, time, mute, volume
+        # transport: play, position, time, mute, volume (always fully visible)
         transport = GlassPanel()
         row = QHBoxLayout()
         row.setSpacing(12)
@@ -104,22 +125,27 @@ class MainWindow(QMainWindow):
         self.play_button.clicked.connect(self.toggle_play)
         self.position_slider = GlassSlider()
         self.position_slider.setRange(0, 0)
+        self.position_slider.setMinimumWidth(100)
         self.position_slider.sliderMoved.connect(self._seek)
-        self.position_label = QLabel(format_time(0))
+        self.position_label = ElidedLabel(format_time(0))
         self.position_label.setObjectName("time")
-        self.position_label.setMinimumWidth(78)
+        self.position_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.position_label.set_measure_texts(
+            [f"{d}{d}:{d}{d}:{d}{d}.{d}{d}{d}" for d in "0123456789"])
         self.mute_button = GlassButton(icon_kind="speaker", diameter=42)
         self.mute_button.setCheckable(True)
         self.mute_button.toggled.connect(self._on_mute_toggled)
         self.volume_slider = GlassSlider()
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(int(round(self.player.volume() * 100)))
-        self.volume_slider.setFixedWidth(120)
+        self.volume_slider.setMinimumWidth(90)
+        self.volume_slider.setMaximumWidth(160)
+        self.volume_slider.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.volume_slider.valueChanged.connect(self._on_volume_changed)
         row.addWidget(self.play_button)
         row.addWidget(self.position_slider, 1)
         row.addWidget(self.position_label)
-        row.addSpacing(10)
+        row.addSpacing(6)
         row.addWidget(self.mute_button)
         row.addWidget(self.volume_slider)
         transport.body.addLayout(row)
@@ -137,14 +163,18 @@ class MainWindow(QMainWindow):
         grid = QGridLayout()
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(8)
-        self.start_label, self.end_label = QLabel(), QLabel()
+        self.start_label, self.end_label = ElidedLabel(), ElidedLabel()
+        self.start_label.set_measure_texts(T("start") + T("end"))
+        self.end_label.set_measure_texts(T("start") + T("end"))
         self.start_edit, self.end_edit = QLineEdit(), QLineEdit()
         for edit in (self.start_edit, self.end_edit):
-            edit.setMaximumWidth(130)
+            edit.setFixedSize(136, 38)
             edit.setAlignment(Qt.AlignCenter)
         self.start_edit.editingFinished.connect(lambda: self._edit_finished(True))
         self.end_edit.editingFinished.connect(lambda: self._edit_finished(False))
         self.set_start_button, self.set_end_button = GlassButton(), GlassButton()
+        for b in (self.set_start_button, self.set_end_button):
+            b.set_texts(T("set_start") + T("set_end"))
         self.set_start_button.clicked.connect(self.set_start_from_position)
         self.set_end_button.clicked.connect(self.set_end_from_position)
         grid.addWidget(self.start_label, 0, 0)
@@ -157,19 +187,20 @@ class MainWindow(QMainWindow):
         rl.addLayout(grid)
         lay.addWidget(self.range_box)
 
-        # segments
+        # segments: wrapping cards + add / remove
         self.segments_box = GlassPanel()
         sl = QHBoxLayout()
         sl.setSpacing(14)
-        self.segment_list = QListWidget()
-        self.segment_list.setMaximumHeight(120)
+        self.segment_list = SegmentCardList()
         self.segment_list.currentRowChanged.connect(self._on_row_changed)
+        self.segment_list.removeRequested.connect(self.remove_segment_at)
         side = QVBoxLayout()
+        side.setSpacing(6)
         self.add_button, self.remove_button = GlassButton(), GlassButton()
+        for b in (self.add_button, self.remove_button):
+            b.set_texts(T("add_segment") + T("remove_segment"))
         self.add_button.clicked.connect(self.add_segment)
         self.remove_button.clicked.connect(self.remove_segment)
-        for b in (self.add_button, self.remove_button):
-            b.setMinimumWidth(140)
         side.addWidget(self.add_button)
         side.addWidget(self.remove_button)
         side.addStretch(1)
@@ -182,16 +213,21 @@ class MainWindow(QMainWindow):
         bottom_panel = GlassPanel()
         bottom = QHBoxLayout()
         bottom.setSpacing(10)
-        self.mode_label = QLabel()
+        self.mode_label = ElidedLabel()
+        self.mode_label.set_measure_texts(T("mode"))
         self.fast_radio, self.precise_radio = GlassButton(), GlassButton()
+        self.fast_radio.set_texts(T("mode_fast"))
+        self.precise_radio.set_texts(T("mode_precise"))
         for b in (self.fast_radio, self.precise_radio):
             b.setCheckable(True)
+            b.set_shrinkable(True)  # the only buttons that may be squeezed (elided) when narrow
         self.fast_radio.setChecked(True)
         self.mode_group = QButtonGroup(self)
         self.mode_group.setExclusive(True)
         self.mode_group.addButton(self.fast_radio)
         self.mode_group.addButton(self.precise_radio)
         self.save_button = GlassButton(primary=True)
+        self.save_button.set_texts(T("save"))
         self.save_button.setDefault(True)
         self.save_button.clicked.connect(self.save)
         for w in (self.mode_label, self.fast_radio, self.precise_radio):
@@ -203,11 +239,20 @@ class MainWindow(QMainWindow):
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setTextVisible(False)
         bottom_panel.body.addWidget(self.progress_bar)
-        self.status_label = QLabel()
+        self.status_label = ElidedLabel()  # one line, elided: a long text never resizes anything
         self.status_label.setObjectName("status")
-        self.status_label.setWordWrap(True)
         bottom_panel.body.addWidget(self.status_label)
         lay.addWidget(bottom_panel)
+
+    def _initial_size(self) -> QSize:
+        """Comfortable default, never more than 90% of the usable screen area."""
+        screen = QGuiApplication.primaryScreen()
+        want = QSize(1120, 820)
+        if screen is None:
+            return want
+        geo = screen.availableGeometry()
+        return QSize(min(want.width(), int(geo.width() * 0.9)),
+                     min(want.height(), int(geo.height() * 0.9)))
 
     def _connect_player(self) -> None:
         self.player.positionChanged.connect(self._on_player_position)
@@ -282,6 +327,7 @@ class MainWindow(QMainWindow):
                   self.play_button, self.position_slider):
             w.setEnabled(loaded)
         self.remove_button.setEnabled(loaded and len(self._segments) > 1)
+        self.segment_list.set_removable(loaded)
         self.open_button.setEnabled(not self._busy)
 
     def _update_play_text(self) -> None:
@@ -366,7 +412,7 @@ class MainWindow(QMainWindow):
         self.player.set_source(path)
         self.progress_bar.setValue(0)
         self._show_status("ready")
-        self._refresh_segment_items()
+        self._refresh_segment_items(select=-1)
         self.segment_list.setCurrentRow(0)
         self._select_row(0)
         self._update_enabled()
@@ -418,19 +464,8 @@ class MainWindow(QMainWindow):
         self.position_label.setText(format_time(ms / 1000.0))
 
     # ------------------------------------------------------------------ segments
-    def _segment_text(self, i: int) -> str:
-        s, e = self._segments[i]
-        return f"{self.t('segment')} {i + 1}: {format_time(s)} - {format_time(e)}"
-
-    def _refresh_segment_items(self) -> None:
-        row = self.segment_list.currentRow()
-        self.segment_list.blockSignals(True)
-        self.segment_list.clear()
-        for i in range(len(self._segments)):
-            self.segment_list.addItem(self._segment_text(i))
-        if 0 <= row < len(self._segments):
-            self.segment_list.setCurrentRow(row)
-        self.segment_list.blockSignals(False)
+    def _refresh_segment_items(self, select: int | None = None) -> None:
+        self.segment_list.set_segments(self._segments, self.language, select)
 
     def _select_row(self, row: int, preview: bool = False) -> None:
         """Load segment ``row`` into the slider and time fields."""
@@ -457,9 +492,7 @@ class MainWindow(QMainWindow):
         self._segments[row] = (low, high)
         self.start_edit.setText(format_time(low))
         self.end_edit.setText(format_time(high))
-        item = self.segment_list.item(row)
-        if item:
-            item.setText(self._segment_text(row))
+        self.segment_list.update_segment(row, self._segments[row])
 
     def _edit_finished(self, is_start: bool) -> None:
         edit = self.start_edit if is_start else self.end_edit
@@ -487,22 +520,28 @@ class MainWindow(QMainWindow):
         if not 0 <= row < len(self._segments):
             row = len(self._segments) - 1
         self._segments.append(self._segments[row])
-        self._refresh_segment_items()
         new_row = len(self._segments) - 1
-        self.segment_list.setCurrentRow(new_row)
+        self._refresh_segment_items(select=new_row)
         self._select_row(new_row)
+        self.segment_list.ensureWidgetVisible(self.segment_list.card(new_row), 4, 4)
         self._update_enabled()
 
     def remove_segment(self) -> None:
         """Remove the selected segment; the last remaining one cannot be removed."""
-        row = self.segment_list.currentRow()
-        if len(self._segments) <= 1 or not 0 <= row < len(self._segments):
+        self.remove_segment_at(self.segment_list.currentRow())
+
+    def remove_segment_at(self, row: int) -> None:
+        """Remove segment ``row`` (a card's cross); the last remaining one cannot be removed."""
+        if len(self._segments) <= 1 or not 0 <= row < len(self._segments) or self._busy:
             return
+        current = self.segment_list.currentRow()
         del self._segments[row]
-        self._refresh_segment_items()
-        new_row = min(row, len(self._segments) - 1)
-        self.segment_list.setCurrentRow(new_row)
-        self._select_row(new_row)
+        if row < current:
+            new_row = current - 1
+        else:
+            new_row = min(current if row != current else row, len(self._segments) - 1)
+        self._refresh_segment_items(select=new_row)
+        self._select_row(new_row, preview=(row == current))
         self._update_enabled()
 
     # ------------------------------------------------------------------ saving

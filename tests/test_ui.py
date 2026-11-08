@@ -568,7 +568,12 @@ def test_segment_list_shows_each_segment(win):
     win.range_slider.setValues(1, 2)
     win.add_segment()
     assert win.segment_list.count() == 2
-    assert "00:01.000" in win.segment_list.item(1).text()
+    card = win.segment_list.card(1)
+    assert "00:01.000" in card.range_label.text() and "00:02.000" in card.range_label.text()
+    assert card.index_label.text() == "#2"
+    assert "00:01.000" in card.duration_label.text()     # duration of the card
+    win.range_slider.setValues(1, 5)                      # editing updates the card text
+    assert "00:05.000" in win.segment_list.card(1).range_label.text()
     assert i18n.tr("en", "segments") == "Segments (each is saved as a separate file)"
 
 
