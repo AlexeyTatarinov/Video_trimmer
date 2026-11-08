@@ -40,6 +40,8 @@ class MainWindow(QMainWindow):
 
     def __init__(self, language: str | None = None, settings=None) -> None:
         super().__init__()
+        from video_trimmer import icon as _icon
+        self.setWindowIcon(_icon.load_icon())
         self._settings = settings if settings is not None else theme.make_settings()
         self.theme_name = theme.load_theme_name(self._settings)
         theme.set_current(self.theme_name)
