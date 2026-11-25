@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 
-from .core import TrimError, trim, trim_each
+from .core import Crop, TrimError, trim, trim_each
 
 
 def parse_time(text: str) -> float:
@@ -35,6 +36,19 @@ def parse_range(text: str) -> "tuple[float, float]":
         raise argparse.ArgumentTypeError(f"invalid range '{text}': {exc}") from None
 
 
+def parse_crop(text: str) -> "Crop | None":
+    """X:Y:W:H in source pixels (integers), or 'full' for no crop."""
+    t = text.strip()
+    if t.lower() == "full":
+        return None
+    pieces = t.split(":")
+    if len(pieces) != 4 or not all(re.fullmatch(r"\s*[0-9]+\s*", p) for p in pieces):
+        raise argparse.ArgumentTypeError(
+            f"invalid crop '{text}': expected X:Y:W:H in pixels (e.g. 0:0:640:360) or 'full'")
+    x, y, w, h = (int(p) for p in pieces)
+    return Crop(x, y, w, h)
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="python -m video_trimmer.cli",
@@ -50,14 +64,27 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--mode", choices=("fast", "precise"), default="fast",
                     help="fast: no re-encoding, keyframe-snapped (default); "
                          "precise: re-encode, frame-accurate")
+    ap.add_argument("--crop", dest="crops", action="append", type=parse_crop, metavar="X:Y:W:H",
+                    help="with --separate: visible area for the Nth --range (Nth --crop), in "
+                         "source pixels, or 'full'; ranges without a --crop are not cropped. "
+                         "The area is fitted into the original size with black bars and the "
+                         "fragment is re-encoded")
     return ap
 
 
 def main(argv: "list[str] | None" = None) -> int:
-    args = build_parser().parse_args(argv)
+    ap = build_parser()
+    args = ap.parse_args(argv)
+    crops = None
+    if args.crops is not None:
+        if not args.separate:
+            ap.error("--crop can only be used together with --separate")
+        if len(args.crops) > len(args.ranges):
+            ap.error(f"too many --crop values: {len(args.crops)} for {len(args.ranges)} --range")
+        crops = args.crops + [None] * (len(args.ranges) - len(args.crops))
     try:
         if args.separate:
-            outs = trim_each(args.input, args.ranges, args.output, mode=args.mode)
+            outs = trim_each(args.input, args.ranges, args.output, mode=args.mode, crops=crops)
             for path in outs:
                 print(f"Saved: {path}")
             return 0

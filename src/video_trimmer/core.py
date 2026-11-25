@@ -30,6 +30,18 @@ class VideoInfo:
     has_video: bool
 
 
+@dataclass(frozen=True)
+class Crop:
+    """Visible area of a segment in source pixels of the displayed (rotated) picture."""
+    x: int
+    y: int
+    w: int
+    h: int
+
+
+_MIN_CROP = 32
+
+
 # ---------------------------------------------------------------- helpers
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]     # folder with tools/ (run.bat downloads ffmpeg there)
 
@@ -103,6 +115,58 @@ def _to_float(value) -> "float | None":
     return f if f == f and f not in (float("inf"), float("-inf")) else None
 
 
+def _rotation(stream: dict) -> int:
+    """Display rotation of a video stream in degrees (0, 90, 180, 270)."""
+    value = None
+    for sd in stream.get("side_data_list") or []:
+        if "rotation" in sd:
+            value = _to_float(sd.get("rotation"))
+            break
+    if value is None:
+        value = _to_float((stream.get("tags") or {}).get("rotate"))
+    if value is None:
+        return 0
+    return int(round(value / 90.0)) * 90 % 360
+
+
+def _is_int(v) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def validate_crop(crop: "Crop | None", width: int, height: int) -> "Crop | None":
+    """Normalise a visible area for a width x height picture.
+
+    None or an area covering the whole picture -> None (no crop). Otherwise the area is
+    clipped to the picture, width/height are made even and at least 32 (kept inside).
+    """
+    if crop is None:
+        return None
+    if not isinstance(crop, Crop) or not all(_is_int(v) for v in (crop.x, crop.y, crop.w, crop.h)):
+        raise TrimError(f"Invalid visible area: {crop!r}")
+    if crop.w <= 0 or crop.h <= 0:
+        raise TrimError(f"Visible area must have a positive size, got {crop.w}x{crop.h}.")
+    if not _is_int(width) or not _is_int(height) or width <= 0 or height <= 0:
+        raise TrimError("A visible area needs a video picture.")
+    x0, y0 = max(0, crop.x), max(0, crop.y)
+    x1, y1 = min(width, crop.x + crop.w), min(height, crop.y + crop.h)
+    if x1 <= x0 or y1 <= y0:
+        raise TrimError(f"Visible area {crop.w}x{crop.h} at ({crop.x},{crop.y}) "
+                        f"is outside the {width}x{height} picture.")
+    max_w, max_h = width - width % 2, height - height % 2
+
+    def fit(start: int, size: int, limit: int, max_size: int) -> "tuple[int, int]":
+        size = size - size % 2
+        size = min(max(size, _MIN_CROP), max_size)
+        start = max(0, min(start, limit - size))
+        return start, size
+
+    x, w = fit(x0, x1 - x0, width, max_w)
+    y, h = fit(y0, y1 - y0, height, max_h)
+    if x == 0 and y == 0 and w == max_w and h == max_h:
+        return None
+    return Crop(x, y, w, h)
+
+
 # ---------------------------------------------------------------- public API
 def probe(path: "str | Path") -> VideoInfo:
     p = _check_file(path)
@@ -124,6 +188,8 @@ def probe(path: "str | Path") -> VideoInfo:
         raise TrimError(f"Cannot determine the duration of {p.name}")
     width = int(video[0].get("width") or 0) if video else 0
     height = int(video[0].get("height") or 0) if video else 0
+    if video and _rotation(video[0]) % 180 == 90:
+        width, height = height, width      # displayed size, as ffmpeg autorotates on re-encode
     return VideoInfo(duration=duration, width=width, height=height,
                      has_audio=bool(audio), has_video=bool(video))
 
@@ -367,19 +433,47 @@ def _cut_args(src: Path, start: float, length: float, mode: str, out: Path) -> "
     return args + ["-y", str(out)]
 
 
+def _crop_args(src: Path, start: float, length: float, crop: Crop, width: int, height: int,
+               out: Path) -> "list[str]":
+    """Re-encode one segment showing only `crop`, fitted into width x height with black bars."""
+    vf = (f"crop={crop.w}:{crop.h}:{crop.x}:{crop.y},"
+          f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+          f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1")
+    return ["-ss", f"{start:.6f}", "-i", str(src), "-t", f"{length:.6f}",
+            "-map", "0:v:0?", "-map", "0:a:0?", "-vf", vf,
+            "-c:v", "libx264", "-crf", "18", "-preset", "veryfast",
+            "-pix_fmt", "yuv420p", "-c:a", "aac", "-y", str(out)]
+
+
 def trim_each(
     src: "str | Path",
     ranges: "list[tuple[float, float]]",
     out_dir: "str | Path",
     mode: str = "fast",
     progress: "Callable[[float], None] | None" = None,
+    crops: "list[Crop | None] | None" = None,
 ) -> "list[Path]":
-    """Cut every range from the original source into its own file (all or nothing)."""
+    """Cut every range from the original source into its own file (all or nothing).
+
+    `crops` (optional) gives a visible area per range; a segment with an area is always
+    re-encoded (frame-accurate) at the source's displayed size with black bars.
+    """
     src_p = _check_file(src)
     if mode not in _MODES:
         raise TrimError(f"Invalid mode '{mode}'. Use 'fast' or 'precise'.")
     info = probe(src_p)
     valid = validate_segments(ranges, info.duration)
+    if crops is None:
+        areas: "list[Crop | None]" = [None] * len(valid)
+    else:
+        try:
+            crops = list(crops)
+        except TypeError as exc:
+            raise TrimError("Visible areas must be a list with one item per range.") from exc
+        if len(crops) != len(valid):
+            raise TrimError(f"Got {len(crops)} visible areas for {len(valid)} ranges.")
+        areas = [validate_crop(c, info.width, info.height) for c in crops]
+    out_w, out_h = info.width - info.width % 2, info.height - info.height % 2
     out_p = Path(out_dir)
     if out_p.exists() and not out_p.is_dir():
         raise TrimError(f"Output folder is not a folder: {out_p}")
@@ -424,7 +518,12 @@ def trim_each(
                     last[0] = v
                     report(v)
 
-            _run_ffmpeg(_cut_args(src_p, start, length, mode, out), length, on_frac)
+            area = areas[i]
+            if area is None:
+                args = _cut_args(src_p, start, length, mode, out)
+            else:
+                args = _crop_args(src_p, start, length, area, out_w, out_h, out)
+            _run_ffmpeg(args, length, on_frac)
             if not out.is_file() or out.stat().st_size == 0:
                 raise TrimError("ffmpeg produced no output for a fragment.")
             temps.append(out)
