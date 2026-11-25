@@ -1,5 +1,5 @@
 ; Inno Setup script for Video Trimmer. Build (from the repository root):
-;   iscc /DAppVersion=0.3.1 installer\VideoTrimmer.iss
+;   iscc /DAppVersion=0.4.0 installer\VideoTrimmer.iss
 ; Expects the PyInstaller output (with the ffmpeg\ folder) in dist\VideoTrimmer.
 ; Output: installer-out\VideoTrimmer-Setup-<version>.exe
 
