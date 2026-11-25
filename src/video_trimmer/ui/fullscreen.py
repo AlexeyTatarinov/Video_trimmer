@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from video_trimmer import i18n
 from video_trimmer.ui import theme
+from video_trimmer.ui.crop_overlay import CropOverlay
 from video_trimmer.ui.range_slider import RangeSlider
 from video_trimmer.ui.theme import paint_glass, with_alpha
 from video_trimmer.ui.timefmt import format_time
@@ -125,6 +126,9 @@ class FullscreenFooter(GlassPanel):
         row.addWidget(self.position_slider, 1)
         row.addWidget(self.position_label)
         row.addSpacing(6)
+        self.full_frame_button = GlassButton()          # v0.4.0: reset the red frame
+        self.full_frame_button.set_texts(T("full_frame"))
+        row.addWidget(self.full_frame_button)
         row.addWidget(self.mute_button)
         row.addWidget(self.volume_slider)
         self.body.addLayout(row)
@@ -273,6 +277,10 @@ class FullscreenWindow(QWidget):
 
         self.sink = QVideoSink(self)
         self.sink.videoFrameChanged.connect(self._on_frame)
+        # v0.4.0: the red frame; created first, so the header / footer / toast stay above it
+        self.crop_overlay = CropOverlay(self)
+        self.crop_overlay.setFocusPolicy(Qt.NoFocus)    # this window keeps the keys
+        self.crop_overlay.viewChanged.connect(self.update)
         self.header = FullscreenHeader(self)
         self.exit_button = self.header.exit_button
         self.exit_button.clicked.connect(self.exitRequested)
@@ -308,6 +316,7 @@ class FullscreenWindow(QWidget):
         image = frame.toImage()
         if not image.isNull():
             self._image = image
+            self.crop_overlay.set_frame_size(image.size())
             self.update()
 
     def frame_image(self) -> QImage:
@@ -316,20 +325,27 @@ class FullscreenWindow(QWidget):
     def show_image(self, image: QImage) -> None:
         """Show ``image`` (used for tests and screenshots; normally frames come from the sink)."""
         self._image = image
+        if not image.isNull():
+            self.crop_overlay.set_frame_size(image.size())
         self.update()
 
+    def _picture_rectf(self) -> QRectF:
+        r = self.crop_overlay.picture_rect()
+        return r if not r.isEmpty() else QRectF(fit_rect(self._image.size(), self.rect()))
+
     def video_rect(self) -> QRect:
-        """Where the picture is painted: as large as the window allows, aspect ratio kept."""
+        """Where the picture is painted: as large as the window allows, aspect ratio kept
+        (v0.4.0: scaled / panned by the view zoom of the crop overlay)."""
         if self._image.isNull():
             return QRect()
-        return fit_rect(self._image.size(), self.rect())
+        return self._picture_rectf().toRect()
 
     def paintEvent(self, event) -> None:  # noqa: N802
         p = QPainter(self)
         p.fillRect(self.rect(), Qt.black)
         if not self._image.isNull():
             p.setRenderHint(QPainter.SmoothPixmapTransform, True)
-            p.drawImage(self.video_rect(), self._image)
+            p.drawImage(self._picture_rectf(), self._image)
 
     # ------------------------------------------------------------------ panels
     def header_visible(self) -> bool:
@@ -364,6 +380,7 @@ class FullscreenWindow(QWidget):
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
+        self.crop_overlay.setGeometry(self.rect())
         self._layout_panels()
 
     def _set_panel(self, key: str, shown: bool, animate: bool = True) -> None:
@@ -466,6 +483,7 @@ class FullscreenWindow(QWidget):
             self._cursor_timer.start(max(int(self.CURSOR_HIDE_MS), 1))
             return
         self._cursor_hidden = True
+        self.crop_overlay.unsetCursor()          # a handle cursor would keep the pointer visible
         self.setCursor(Qt.BlankCursor)
 
     def cursor_hidden(self) -> bool:
@@ -527,11 +545,21 @@ class FullscreenWindow(QWidget):
         if event.key() == Qt.Key_Escape:
             self.exitRequested.emit()
         elif event.key() == Qt.Key_Space and not event.isAutoRepeat():
+            self.crop_overlay.set_space_held(True)     # Space+drag pans a zoomed view
             self.playToggleRequested.emit()
+        elif self.crop_overlay.handle_key(event, space=False):   # +/- zoom the area
+            return
         else:
             super().keyPressEvent(event)
             return
         event.accept()
+
+    def keyReleaseEvent(self, event) -> None:  # noqa: N802
+        if event.key() == Qt.Key_Space and not event.isAutoRepeat():
+            self.crop_overlay.set_space_held(False)
+            event.accept()
+            return
+        super().keyReleaseEvent(event)
 
     def closeEvent(self, event) -> None:  # noqa: N802
         event.ignore()              # Alt+F4 on the borderless window only leaves full screen
@@ -620,6 +648,9 @@ class FullscreenController(QObject):
         f.set_end_button.clicked.connect(lambda: mw.set_end_from_position())
         f.add_button.clicked.connect(lambda: mw.add_segment())
         mw.segmentCreated.connect(self._segment_created)
+        # visible area (v0.4.0): the main window keeps the areas, both frames show the same one
+        w.crop_overlay.areaChanged.connect(mw._on_area_changed)
+        f.full_frame_button.clicked.connect(lambda: mw.reset_area())
 
     def enter(self) -> None:
         mw = self.main
@@ -665,10 +696,23 @@ class FullscreenController(QObject):
         finally:
             self._mirroring = False
         f.position_label.setText(mw.position_label.text())
+        self.sync_area()
         self._mirror_texts()
         self._mirror_play()
         self.sync_enabled()
         self.retranslate()
+
+    def sync_area(self, reset_view: bool = False) -> None:
+        """Give the full-screen frame the source size and the area of the main window."""
+        if self.window is None:
+            return
+        main_ov, ov = self.main.crop_overlay, self.window.crop_overlay
+        size = main_ov.source_size()
+        if size != ov.source_size():
+            ov.set_source_size(size.width(), size.height())
+        elif reset_view:
+            ov.fit_view()
+        ov.set_area(main_ov.area(), emit=False)
 
     def _mirror_texts(self) -> None:
         f, mw = self.window.footer, self.main
@@ -682,8 +726,10 @@ class FullscreenController(QObject):
         for mine, theirs in ((f.play_button, mw.play_button), (f.position_slider, mw.position_slider),
                              (f.range_slider, mw.range_slider), (f.start_edit, mw.start_edit),
                              (f.end_edit, mw.end_edit), (f.set_start_button, mw.set_start_button),
-                             (f.set_end_button, mw.set_end_button), (f.add_button, mw.add_button)):
+                             (f.set_end_button, mw.set_end_button), (f.add_button, mw.add_button),
+                             (f.full_frame_button, mw.full_frame_button)):
             mine.setEnabled(theirs.isEnabled())
+        self.window.crop_overlay.set_interactive(mw.has_video() and not mw.is_busy())
         self.window.export_button.setEnabled(mw.save_button.isEnabled())
         tip = ""
         if mw.is_busy():
@@ -704,6 +750,7 @@ class FullscreenController(QObject):
         f.set_end_button.setToolTip(mw.t("set_end_tip"))
         f.add_button.setText(mw.t("add_segment"))
         f.add_button.setToolTip(mw.t("add_segment_tip"))
+        f.full_frame_button.setText(mw.t("full_frame"))
         f.mute_button.setToolTip(mw.mute_button.toolTip())
         f.volume_slider.setToolTip(mw.t("volume"))
         self.window.exit_button.setToolTip(mw.t("exit_fullscreen"))
