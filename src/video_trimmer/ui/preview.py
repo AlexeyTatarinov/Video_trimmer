@@ -4,12 +4,11 @@ from __future__ import annotations
 import os
 
 from PySide6.QtCore import QObject, QRectF, QSize, QTimer, Qt, QUrl, Signal
-from PySide6.QtGui import QPainterPath, QRegion
+from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QRegion
 from PySide6.QtWidgets import QLabel, QSizePolicy, QWidget
 
 try:  # QtMultimedia is shipped in PySide6-Addons, not in PySide6-Essentials
-    from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
-    from PySide6.QtMultimediaWidgets import QVideoWidget
+    from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QVideoSink
     MULTIMEDIA_AVAILABLE = True
 except ImportError:  # pragma: no cover - depends on installation
     MULTIMEDIA_AVAILABLE = False
@@ -19,22 +18,77 @@ VIDEO_MIN_SIZE = QSize(320, 180)
 VIDEO_HINT_SIZE = QSize(640, 360)
 
 if MULTIMEDIA_AVAILABLE:
-    class ResponsiveVideoWidget(QVideoWidget):
-        """Video surface whose size never depends on the frame size of the loaded video.
+    class ResponsiveVideoWidget(QWidget):
+        """Preview surface: paints the frames of its own QVideoSink, with the crop frame on top.
 
-        QVideoWidget reports the native frame size (3840x2160 for a 4K clip) as its size hint,
-        which makes layouts grow the window and paint over the neighbouring panels. Here the hint
-        is constant, the minimum is small and the policy is Expanding/Ignored: the layout alone
-        decides how much room the video gets.
+        v0.4.0: this used to be a QVideoWidget. On Windows that is a native window, and ordinary
+        widgets (the red crop frame) cannot reliably be painted above it. Like the full-screen
+        window (v0.2.3), the preview now receives the frames through a QVideoSink and paints them
+        itself, so the ``CropOverlay`` child is always on top and the view zoom is a simple
+        painter transform.
+
+        Its size never depends on the frame size of the loaded video: the hint is constant, the
+        minimum is small and the policy is Expanding/Ignored (the layout decides).
         """
 
         doubleClicked = Signal()
         CORNER_RADIUS = 22.0   # same as the glass panel it sits in (widgets.PANEL_RADIUS)
+        BACKGROUND = QColor(8, 8, 14)
 
         def __init__(self, parent: QWidget | None = None) -> None:
             super().__init__(parent)
+            from video_trimmer.ui.crop_overlay import CropOverlay
             self.setMinimumSize(VIDEO_MIN_SIZE)
             self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
+            self.setAttribute(Qt.WA_OpaquePaintEvent, True)
+            self._image = QImage()
+            self.frame_count = 0
+            self.adopt_frame_size = False   # take the source size from the frames (no probe size)
+            self._sink = QVideoSink(self)
+            self._sink.videoFrameChanged.connect(self._on_frame)
+            self.crop_overlay = CropOverlay(self)
+            self.crop_overlay.viewChanged.connect(self.update)
+            self.crop_overlay.setGeometry(self.rect())
+
+        # ---- frames
+        def videoSink(self) -> QVideoSink:  # noqa: N802 - same name as QVideoWidget's
+            return self._sink
+
+        def _on_frame(self, frame) -> None:
+            image = frame.toImage()
+            if not image.isNull():
+                self.frame_count += 1
+                self.show_image(image)
+
+        def show_image(self, image: QImage) -> None:
+            """Show ``image`` (frames from the sink; also used by tests and screenshots)."""
+            self._image = image
+            if not image.isNull():
+                if self.adopt_frame_size and not self.crop_overlay.has_source():
+                    self.adopt_frame_size = False
+                    self.crop_overlay.set_source_size(image.width(), image.height())
+                self.crop_overlay.set_frame_size(image.size())
+            self.update()
+
+        def frame_image(self) -> QImage:
+            return self._image
+
+        def clear_image(self) -> None:
+            self._image = QImage()
+            self.update()
+
+        def picture_rect(self) -> QRectF:
+            return self.crop_overlay.picture_rect()
+
+        def paintEvent(self, event) -> None:  # noqa: N802
+            p = QPainter(self)
+            p.fillRect(self.rect(), self.BACKGROUND)
+            if not self._image.isNull():
+                target = self.picture_rect()
+                if target.isEmpty():
+                    target = QRectF(self.rect())
+                p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+                p.drawImage(target, self._image)
 
         def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
             if event.button() == Qt.LeftButton:
@@ -45,6 +99,7 @@ if MULTIMEDIA_AVAILABLE:
 
         def resizeEvent(self, event) -> None:  # noqa: N802
             super().resizeEvent(event)
+            self.crop_overlay.setGeometry(self.rect())
             self._update_mask()
 
         def showEvent(self, event) -> None:  # noqa: N802
@@ -103,7 +158,7 @@ class PreviewPlayer(QObject):
                 self._audio = QAudioOutput(self)
                 self._player.setAudioOutput(self._audio)
                 self._apply_audio()
-            self._player.setVideoOutput(self.video_widget)
+            self._player.setVideoSink(self.video_widget.videoSink())
             self._player.positionChanged.connect(lambda ms: self.positionChanged.emit(int(ms)))
             self._player.playbackStateChanged.connect(self._on_state)
             self._player.errorOccurred.connect(lambda *_a: self.error.emit())

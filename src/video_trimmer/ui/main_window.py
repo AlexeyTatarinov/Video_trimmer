@@ -14,6 +14,8 @@ import os
 
 from video_trimmer import core, i18n, trash
 from video_trimmer.ui import theme
+from video_trimmer.ui.crop_overlay import CropOverlay
+from video_trimmer.ui.crop_types import normalize_crop
 from video_trimmer.ui.preview import PreviewPlayer
 from video_trimmer.ui.range_slider import RangeSlider
 from video_trimmer.ui.popups import ModeInfoPopup, SettingsPopup
@@ -53,6 +55,7 @@ class MainWindow(QMainWindow):
         self._src: str | None = None
         self._duration = 0.0
         self._segments: list[tuple[float, float]] = []
+        self._crops: list = []              # v0.4.0: visible area of each card (Crop or None)
         self._syncing = False
         self._busy = False
         self._exporting = False
@@ -132,7 +135,32 @@ class MainWindow(QMainWindow):
         pal = self.video_widget.palette()
         pal.setColor(pal.ColorRole.Window, QColor(8, 8, 14))
         self.video_widget.setPalette(pal)
-        video_panel.body.addWidget(self.video_widget, 1)
+        # v0.4.0: the red crop frame lives over the picture; its buttons sit next to the video
+        self.crop_overlay = getattr(self.video_widget, "crop_overlay", None)
+        if self.crop_overlay is None:          # no QtMultimedia: an inert, never shown overlay
+            self.crop_overlay = CropOverlay()
+        self.crop_overlay.areaChanged.connect(self._on_area_changed)
+        video_row = QHBoxLayout()
+        video_row.setSpacing(8)
+        video_row.addWidget(self.video_widget, 1)
+        zoom_col = QVBoxLayout()
+        zoom_col.setSpacing(4)
+        self.zoom_in_button = GlassButton(icon_kind="zoom_in", diameter=36)
+        self.zoom_out_button = GlassButton(icon_kind="zoom_out", diameter=36)
+        self.full_frame_button = GlassButton(icon_kind="full_frame", diameter=36)
+        self.fit_view_button = GlassButton(icon_kind="fit_view", diameter=36)
+        self.zoom_in_button.clicked.connect(self.crop_overlay.zoom_in)
+        self.zoom_out_button.clicked.connect(self.crop_overlay.zoom_out)
+        self.full_frame_button.clicked.connect(self.reset_area)
+        self.fit_view_button.clicked.connect(self.crop_overlay.fit_view)
+        zoom_col.addStretch(1)
+        for b in (self.zoom_in_button, self.zoom_out_button, self.full_frame_button):
+            zoom_col.addWidget(b)
+        zoom_col.addSpacing(10)
+        zoom_col.addWidget(self.fit_view_button)
+        zoom_col.addStretch(1)
+        video_row.addLayout(zoom_col)
+        video_panel.body.addLayout(video_row, 1)
         self.video_panel = video_panel
         lay.addWidget(video_panel, 1)
 
@@ -313,12 +341,17 @@ class MainWindow(QMainWindow):
         self.add_button.setText(self.t("add_segment"))
         self.add_button.setToolTip(self.t("add_segment_tip"))
         self.video_widget.setToolTip(self.t("fullscreen_tip"))
+        self.crop_overlay.setToolTip(f"<p>{self.t('crop_tip')}</p><p>{self.t('fullscreen_tip')}</p>")
+        self.zoom_in_button.setToolTip(self.t("zoom_in"))
+        self.zoom_out_button.setToolTip(self.t("zoom_out"))
+        self.full_frame_button.setToolTip(self.t("full_frame"))
+        self.fit_view_button.setToolTip(self.t("fit_view"))
         self.clear_button.setText(self.t("clear_all"))
         self.clear_button.setToolTip(self.t("clear_all_tip"))
         self.segments_box.setToolTip(self.t("segments"))
         self.mode_label.setText(self.t("mode"))
         self.fast_radio.setText(self.t("mode_fast"))
-        self.fast_radio.setToolTip(f"<p>{self.t('mode_fast_tip')}</p>")
+        self.fast_radio.setToolTip(f"<p>{self.t('mode_fast_tip')}</p><p>{self.t('mode_crop_note')}</p>")
         self.precise_radio.setText(self.t("mode_precise"))
         self.precise_radio.setToolTip(f"<p>{self.t('mode_precise_tip')}</p>")
         self.info_button.setToolTip(self.t("mode_info"))
@@ -356,6 +389,14 @@ class MainWindow(QMainWindow):
     def segments(self) -> list[tuple[float, float]]:
         return list(self._segments)
 
+    def segment_crops(self) -> list:
+        """Visible area of each card, in card order: a Crop, or None for the full frame."""
+        return list(self._crops)
+
+    def current_area(self):
+        """The area in the red frame now (None = full frame)."""
+        return self.crop_overlay.area()
+
     def mode(self) -> str:
         return "precise" if self.precise_radio.isChecked() else "fast"
 
@@ -366,8 +407,11 @@ class MainWindow(QMainWindow):
         loaded = self.has_video() and not self._busy
         for w in (self.add_button, self.clear_button, self.set_start_button,
                   self.set_end_button, self.start_edit, self.end_edit, self.range_slider,
-                  self.segment_list, self.play_button, self.position_slider):
+                  self.segment_list, self.play_button, self.position_slider,
+                  self.zoom_in_button, self.zoom_out_button, self.full_frame_button,
+                  self.fit_view_button):
             w.setEnabled(loaded)
+        self.crop_overlay.set_interactive(loaded)
         self.save_button.setEnabled(loaded and bool(self._segments))   # nothing to save without cards
         self._update_save_tip()
         self.segment_list.set_removable(loaded)
@@ -494,6 +538,8 @@ class MainWindow(QMainWindow):
             return
         self._src, self._duration = path, float(info.duration)
         self._segments = []                       # no cards: the sliders hold the draft (whole file)
+        self._crops = []
+        self._load_source_size(info)
         self.segment_list.setCurrentRow(-1)
         self._syncing = True
         try:
@@ -561,7 +607,54 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ segments
     def _refresh_segment_items(self, select: int | None = None) -> None:
-        self.segment_list.set_segments(self._segments, self.language, select)
+        self.segment_list.set_segments(self._segments, self.language, select, self._crops)
+
+    # ------------------------------------------------------------------ visible area (v0.4.0)
+    def _load_source_size(self, info) -> None:
+        """New video: full frame, fitted view. Size = displayed size from the probe; if the core
+        does not report it, the size of the first decoded frame is used."""
+        width = int(getattr(info, "width", 0) or 0)
+        height = int(getattr(info, "height", 0) or 0)
+        vw = self.video_widget
+        if hasattr(vw, "clear_image"):
+            vw.clear_image()
+        if hasattr(vw, "adopt_frame_size"):
+            vw.adopt_frame_size = width <= 0 or height <= 0
+        self.crop_overlay.set_source_size(max(width, 0), max(height, 0))
+        if self._fullscreen is not None:
+            self._fullscreen.sync_area(reset_view=True)
+
+    def _area_overlays(self) -> list:
+        overlays = [self.crop_overlay]
+        if self._fs is not None:
+            overlays.append(self._fs.crop_overlay)
+        return overlays
+
+    def _show_area(self, crop) -> None:
+        """Put ``crop`` into every frame (main and full screen) without editing any card."""
+        for ov in self._area_overlays():
+            ov.set_area(crop, emit=False)
+
+    def _on_area_changed(self, crop) -> None:
+        """The owner changed the frame (in either window)."""
+        self._show_area(crop)
+        row = self.editing_row()
+        if row >= 0 and row < len(self._crops):     # editing mode: the frame edits that card
+            self._crops[row] = crop
+            self.segment_list.update_segment(row, self._segments[row], crop)
+
+    def _source_wh(self) -> tuple[int, int]:
+        size = self.crop_overlay.source_size()
+        return size.width(), size.height()
+
+    def reset_area(self) -> None:
+        """"Full frame": no crop for the draft or the edited card."""
+        if not self.has_video():
+            return
+        if self.current_area() is None:
+            self._show_area(None)
+            return
+        self.crop_overlay.reset_area()
 
     def editing_row(self) -> int:
         """Row of the card being edited, or -1 in draft mode (no card selected)."""
@@ -594,6 +687,8 @@ class MainWindow(QMainWindow):
         self._update_edit_note()
         if row >= 0:
             self._select_row(row, preview=True)
+            if row < len(self._crops):
+                self._show_area(self._crops[row])
 
     def _on_range_changed(self, low: float, high: float) -> None:
         if self._syncing:
@@ -636,6 +731,7 @@ class MainWindow(QMainWindow):
             self._show_status("empty_segment")
             return
         self._segments.append((low, high))
+        self._crops.append(normalize_crop(self.current_area(), *self._source_wh()))
         number = len(self._segments)
         self._refresh_segment_items(select=-1)
         self._update_edit_note()
@@ -650,6 +746,8 @@ class MainWindow(QMainWindow):
             return
         current = self.editing_row()
         del self._segments[row]
+        if row < len(self._crops):
+            del self._crops[row]
         if current < 0 or row == current:
             new_row = -1
         else:
@@ -665,6 +763,7 @@ class MainWindow(QMainWindow):
             return
         focused = self.segment_list.isAncestorOf(QApplication.focusWidget())
         self._segments.insert(dst, self._segments.pop(src))
+        self._crops.insert(dst, self._crops.pop(src))
         self._refresh_segment_items(select=dst)
         self._select_row(dst)
         self._update_edit_note()
@@ -693,8 +792,10 @@ class MainWindow(QMainWindow):
         if len(self._segments) > 1 and not self._confirm_clear():
             return
         self._segments = []
+        self._crops = []
         self._refresh_segment_items(select=-1)
         self._load_range(0.0, self._duration, preview=True)
+        self._show_area(None)                  # the draft is the whole file, whole frame again
         self._update_edit_note()
         self._update_enabled()
 
@@ -703,6 +804,9 @@ class MainWindow(QMainWindow):
         if event.key() == Qt.Key_Escape and self.editing_row() >= 0:
             self.segment_list.setCurrentRow(-1)
             event.accept()
+            return
+        # +/- zoom the area wherever the focus is (text fields keep them: they accept the key)
+        if self.has_video() and not self._busy and self.crop_overlay.handle_key(event, space=False):
             return
         super().keyPressEvent(event)
 
@@ -756,6 +860,9 @@ class MainWindow(QMainWindow):
         except core.TrimError as exc:
             self._error(str(exc))
             return
+        crops = list(self._crops) if len(self._crops) == len(ranges) else [None] * len(ranges)
+        # ``crops=`` only when some card has an area: a full-frame export is exactly the 0.3.x call
+        extra = {"crops": crops} if any(c is not None for c in crops) else {}
         out_dir = self._ask_save_dir(Path(src).parent)
         if not out_dir:
             return
@@ -767,7 +874,7 @@ class MainWindow(QMainWindow):
             self._fs.set_export_active(True)
             self._fs.show_toast(self.t("exporting", percent=0), sticky=True)
         self._run(
-            lambda progress: core.trim_each(src, ranges, out_dir, mode, progress),
+            lambda progress: core.trim_each(src, ranges, out_dir, mode, progress, **extra),
             on_result=lambda paths: self._on_saved(paths, out_dir, len(ranges)),
             on_error=self._error,
             on_progress=self._on_save_progress,
@@ -838,7 +945,11 @@ class MainWindow(QMainWindow):
         """Back to the state right after start: no video, no segments."""
         self._src, self._duration = None, 0.0
         self._segments = []
+        self._crops = []
         self.segment_list.setCurrentRow(-1)
+        if hasattr(self.video_widget, "clear_image"):
+            self.video_widget.clear_image()
+        self.crop_overlay.set_source_size(0, 0)
         self._syncing = True
         try:
             self.range_slider.setMaximum(1.0)

@@ -225,3 +225,37 @@ The black video area in the main window has sharp corners while the glass panel 
 - Real-core end-to-end through the window: export with delete ON moves the source to a (temp) trash and keeps outputs; OFF keeps source.
 - CI (GitHub Actions, windows-latest) builds the exe and installer, runs `--selftest` on the frozen exe, silent-installs the installer to a temp dir, checks that the files and the registry keys (right-click item and Open-with for every listed extension) exist, silent-uninstalls and checks that the folder and ALL keys are gone. The release is created from a `v*` tag with the installer attached.
 - Not verifiable in the sandbox (stated honestly): the real Explorer right-click menu rendering, the real Recycle Bin on Windows, the installer wizard look.
+
+---
+
+# Version 0.4.0 — visible area (crop and zoom) per segment (owner request 2026-11-25)
+
+## Owner decisions
+1. A red frame on the preview marks the part of the picture that will be saved. The owner moves it by dragging its inside and resizes it by dragging its edges/corners (8 handles). **Free proportions.**
+2. **Each segment card has its own area.** "Add segment" stores the current frame in the new card; clicking a card loads its area back into the frame together with its time range; editing a card's area updates the card. A card with a non-full area shows a small crop mark and its size (e.g. "crop 960x540").
+3. **Output size = original video resolution.** The area is scaled to fit the original width x height keeping its proportions; the remaining space is filled with black bars (letterbox/pillarbox). A full-frame area means no crop at all (output identical to 0.3.x).
+4. **Zoom:**
+   - mouse wheel over the frame = zoom the area in/out around the cursor (smaller frame = closer); keyboard +/- and buttons "Zoom in", "Zoom out", "Full frame" (reset) next to the video;
+   - Ctrl+wheel anywhere on the video = zoom the WHOLE preview view (view only, for precise placement; does not change the saved result); double-middle-click or "Fit view" button resets the view; the view can be panned by dragging with the middle button or Space+drag when zoomed.
+   - The frame can never leave the video picture; minimum area 32x32 source pixels; coordinates are kept as integers of source pixels with even width/height (codec requirement).
+5. **Fast mode + area:** a segment whose area is not the full frame is always saved in Precise mode (re-encode); the mode hint tells this ("Segments with a visible area are saved precisely"). Full-frame segments keep the selected mode.
+6. Fullscreen mode shows the frame too and lets the owner move/resize it; footer gains "Full frame". Double click inside the frame still toggles fullscreen only when not on a handle.
+7. Texts en/ru/uk with identical keys.
+
+## Core contract (agent CORE)
+- New dataclass `Crop(x: int, y: int, w: int, h: int)` in core.py (source pixels).
+- `validate_crop(crop, width, height) -> Crop | None`: None or a full-frame crop returns None; clamps to the picture, makes w/h even (>= 32), raises TrimError on non-positive size.
+- `trim_each(src, ranges, out_dir, mode="fast", progress=None, crops=None)`: `crops` is None or a list of the same length as ranges with `Crop | None` items. Segments with a crop are re-encoded with the filter `crop=w:h:x:y,scale=W:H:force_original_aspect_ratio=decrease,pad=W:H:(ow-iw)/2:(oh-ih)/2:black,setsar=1` (W,H = source size; handle rotation metadata by using the displayed size reported by probe), libx264 crf 18 + aac, frame-accurate like precise mode. Others unchanged. All-or-nothing behaviour unchanged. Existing calls without `crops` must behave exactly as before.
+- `VideoInfo` must expose `width` and `height` (displayed, after rotation); add them if missing without breaking existing fields.
+- CLI: `--crop X:Y:W:H` may be given per `--range` in `--separate` mode (Nth --crop applies to Nth --range; `full` = none).
+
+## UI contract (agent UI)
+- New widget `ui/crop_overlay.py` (`CropOverlay`) placed over the preview video in the main window and in fullscreen; works in normalised coordinates of the displayed picture and converts to source pixels using VideoInfo width/height and the letterboxed picture rectangle inside the widget.
+- MainWindow: `segments()` keeps returning `list[tuple[float, float]]`; new `segment_crops() -> list[Crop | None]`; save passes `crops=` to `core.trim_each`.
+- The rounded video corners (v0.2.4) must stay.
+
+## Done criteria v0.4.0
+- Tests first; all existing 573 tests stay green.
+- Core tests with real ffmpeg on a generated video with a known pattern (e.g. coloured quadrants): crop of one quadrant -> output has the source size and the quadrant colour fills it; free-proportion crop -> black bars on the expected sides; mixed list (crop/no crop) in fast mode -> no-crop segment keyframe-snapped, crop segment exact duration; invalid crops rejected; odd sizes evened; crops length mismatch rejected.
+- UI tests: drag/resize/wheel zoom change the area and stay inside the picture; Ctrl+wheel changes view only; per-card area saved and restored; full frame reset; save passes crops; mode hint; i18n keys identical.
+- Real-core end-to-end through the window with two cards (one cropped, one full) and screenshots of the frame in light/dark and fullscreen, viewed.

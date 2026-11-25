@@ -5,10 +5,10 @@ Alt+Left / Alt+Right (handled by the main window for the selected card).
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QPainter, QPen
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import (
-    QApplication, QFrame, QGraphicsOpacityEffect, QGridLayout, QScrollArea, QSizePolicy, QWidget,
+    QApplication, QFrame, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QScrollArea, QSizePolicy, QWidget,
 )
 
 from video_trimmer import i18n
@@ -19,6 +19,7 @@ from video_trimmer.ui.theme import with_alpha
 from video_trimmer.ui.widgets import CloseButton, ElidedLabel
 
 DIGITS = "0123456789"
+_KEEP = object()    # "leave the card's crop as it is"
 SPACING = 8
 MARGIN = 4          # room around the cards (selection border, focus)
 VISIBLE_ROWS = 2    # the area grows up to this many rows, then it scrolls
@@ -29,6 +30,67 @@ INDICATOR_WIDTH = 4
 def _by_digit(template: str) -> list[str]:
     """``template`` with every ``@`` replaced by each digit in turn (widest digit wins)."""
     return [template.replace("@", d) for d in DIGITS]
+
+
+class CropMark(QWidget):
+    """Small red crop icon + "WxH" (the full localised text is ``text()`` and the tooltip).
+
+    Its size hint is tiny so it never widens the card: it uses the room the duration leaves."""
+
+    COLOR = QColor(220, 40, 40)
+    COLOR_DARK = QColor(255, 120, 120)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("cardCrop")
+        self._text = ""
+        self._short = ""
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+
+    def text(self) -> str:  # noqa: A003
+        return self._text
+
+    def setText(self, text: str) -> None:  # noqa: N802
+        self._text = text
+        self._short = text.split()[-1] if text else ""
+        self.setToolTip(text)
+        self.update()
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return QSize(2, 14)
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return QSize(0, 14)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        if not self._text:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        font = QFont(self.font())
+        font.setPixelSize(11)
+        font.setWeight(QFont.Weight.Bold)
+        p.setFont(font)
+        fm = QFontMetrics(font)
+        full_w = fm.horizontalAdvance(self._text)
+        icon = 9
+        # the whole text when it fits, else the icon and the size only
+        if full_w + icon + 3 <= self.width():
+            shown = self._text
+        else:
+            shown = fm.elidedText(self._short, Qt.ElideRight, max(self.width() - icon - 3, 0))
+        tw = fm.horizontalAdvance(shown)
+        x = self.width() - tw - icon - 3
+        cy = self.height() / 2
+        color = self.COLOR if theme.current().name == "light" else self.COLOR_DARK
+        pen = QPen(color, 1.6)
+        p.setPen(pen)
+        a = QPointF(x + 1, cy - icon / 2 + 1)
+        p.drawLine(QPointF(a.x() + 2, a.y()), QPointF(a.x() + 2, a.y() + icon - 2))
+        p.drawLine(QPointF(a.x(), a.y() + 2), QPointF(a.x() + icon - 2, a.y() + 2))
+        p.drawLine(QPointF(a.x() + icon - 3, a.y() + 2), QPointF(a.x() + icon - 3, a.y() + icon))
+        p.drawLine(QPointF(a.x() + 2, a.y() + icon - 3), QPointF(a.x() + icon, a.y() + icon - 3))
+        p.drawText(QRectF(x + icon + 3, 0, tw + 1, self.height()), Qt.AlignVCenter | Qt.AlignLeft, shown)
 
 
 class SegmentCard(QFrame):
@@ -61,11 +123,14 @@ class SegmentCard(QFrame):
         self.duration_label = ElidedLabel()
         self.duration_label.setObjectName("cardDim")
         words = i18n.all_texts("duration")
-        self.duration_label.set_measure_texts(
-            [f"{w}: {t}" for w in words for t in _by_digit("@@:@@:@@.@@@")])
+        self._duration_measure = [f"{w}: {t}" for w in words for t in _by_digit("@@:@@:@@.@@@")]
+        self.duration_label.set_measure_texts(self._duration_measure)
+        # v0.4.0: crop mark ("crop 960x540") when the card has its own visible area
+        self.crop_label = CropMark()
+        self._crop = None
         self.delete_button = CloseButton()
         self.delete_button.clicked.connect(lambda: self.deleteRequested.emit(self._index))
-        for lbl in (self.index_label, self.range_label, self.duration_label):
+        for lbl in (self.index_label, self.range_label, self.duration_label, self.crop_label):
             lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         lay = QGridLayout(self)
         lay.setContentsMargins(12, 4, 6, 5)
@@ -74,7 +139,12 @@ class SegmentCard(QFrame):
         lay.addWidget(self.index_label, 0, 0, 2, 1, Qt.AlignVCenter)
         lay.addWidget(self.range_label, 0, 1)
         lay.addWidget(self.delete_button, 0, 2, Qt.AlignTop | Qt.AlignRight)
-        lay.addWidget(self.duration_label, 1, 1, 1, 2)
+        bottom = QHBoxLayout()
+        bottom.setContentsMargins(0, 0, 0, 0)
+        bottom.setSpacing(6)
+        bottom.addWidget(self.duration_label)
+        bottom.addWidget(self.crop_label, 1)
+        lay.addLayout(bottom, 1, 1, 1, 2)
 
     # ---- content
     def text_labels(self) -> list[ElidedLabel]:
@@ -83,12 +153,25 @@ class SegmentCard(QFrame):
     def index(self) -> int:
         return self._index
 
-    def set_segment(self, index: int, start: float, end: float, language: str) -> None:
+    def crop(self):
+        return self._crop
+
+    def set_segment(self, index: int, start: float, end: float, language: str, crop=_KEEP) -> None:
         self._index = index
+        if crop is not _KEEP:
+            self._crop = crop
         self.index_label.setText(f"#{index + 1}")
         self.range_label.setText(f"{format_time(start)} - {format_time(end)}")
         self.duration_label.setText(f"{i18n.tr(language, 'duration')}: {format_time(end - start)}")
-        self.setToolTip(f"{i18n.tr(language, 'segment')} {index + 1}")
+        mark = "" if self._crop is None else i18n.tr(language, "crop_mark", w=self._crop.w, h=self._crop.h)
+        self.crop_label.setText(mark)
+        # a cropped card shows the duration at its real width, the mark takes the rest of the row
+        # (the card keeps its standard size: the range row decides the width)
+        self.duration_label.set_measure_texts([] if mark else self._duration_measure)
+        if mark:
+            self.duration_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        tip = f"{i18n.tr(language, 'segment')} {index + 1}"
+        self.setToolTip(f"{tip} ({mark})" if mark else tip)
         self.delete_button.setToolTip(i18n.tr(language, "delete_segment"))
         self.update()
 
@@ -266,7 +349,7 @@ class SegmentCardList(QScrollArea):
         self.currentRowChanged.emit(row)
 
     def set_segments(self, segments: list[tuple[float, float]], language: str,
-                     select: int | None = None) -> None:
+                     select: int | None = None, crops: list | None = None) -> None:
         """Rebuild the cards. Keeps the selected row (or sets ``select``) without emitting."""
         self._language = language
         row = self._current if select is None else select
@@ -287,16 +370,17 @@ class SegmentCardList(QScrollArea):
             c.show()
             self._cards.append(c)
         for i, (s, e) in enumerate(segments):
-            self._cards[i].set_segment(i, s, e, language)
+            crop = crops[i] if crops is not None and i < len(crops) else None
+            self._cards[i].set_segment(i, s, e, language, crop)
             self._cards[i].set_selected(i == row)
             self._cards[i].delete_button.setEnabled(self._removable)
         self._current = row if 0 <= row < len(segments) else -1
         self._adjust_height()
         self.viewport().update()
 
-    def update_segment(self, row: int, segment: tuple[float, float]) -> None:
+    def update_segment(self, row: int, segment: tuple[float, float], crop=_KEEP) -> None:
         if 0 <= row < len(self._cards):
-            self._cards[row].set_segment(row, segment[0], segment[1], self._language)
+            self._cards[row].set_segment(row, segment[0], segment[1], self._language, crop)
 
     def set_removable(self, removable: bool) -> None:
         self._removable = removable

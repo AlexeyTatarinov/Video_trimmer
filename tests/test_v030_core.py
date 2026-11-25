@@ -18,13 +18,13 @@ EXE = ".exe" if IS_WIN else ""
 
 
 # ---------------------------------------------------------------- version (single source)
-def test_version_is_0_3_1():
-    assert video_trimmer.__version__ == "0.3.1"
+def test_version_is_0_4_0():
+    assert video_trimmer.__version__ == "0.4.0"
 
 
 def test_pyproject_version_is_in_sync():
     text = (Path(__file__).resolve().parent.parent / "pyproject.toml").read_text(encoding="utf-8")
-    assert re.search(r'^version\s*=\s*"0\.3\.1"\s*$', text, re.M)
+    assert re.search(r'^version\s*=\s*"0\.4\.0"\s*$', text, re.M)
 
 
 def test_send2trash_is_a_declared_dependency():

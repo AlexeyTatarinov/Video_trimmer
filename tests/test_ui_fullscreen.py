@@ -383,7 +383,8 @@ def test_timers_stop_after_leaving_and_cursor_is_reset(win, fs):
 
 # ---------------------------------------------------------------- footer content
 
-ALLOWED_BUTTONS = ["play_button", "mute_button", "set_start_button", "set_end_button", "add_button"]
+ALLOWED_BUTTONS = ["play_button", "mute_button", "set_start_button", "set_end_button", "add_button",
+                   "full_frame_button"]     # v0.4.0: the footer gains "Full frame" (spec, decision 6)
 
 
 def test_footer_has_exactly_the_allowed_controls(fs):

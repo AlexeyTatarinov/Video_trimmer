@@ -11,6 +11,7 @@ Created by [Oleksii Tatarinov](https://github.com/AlexeyTatarinov).
 - **Open a video** with a button, by double-clicking it from the "Open with" menu, or straight from the right-click menu of any common video format (see [Installation](#installation)).
 - **Pick the parts to keep** with a range slider. Dragging a handle shows the frame at that exact point, so you see precisely where the cut will be.
 - **Several segments from one video.** "Add segment" creates a card for the current range. Cards can be reordered, edited (click a card), and deleted. Overlapping ranges and repeats are allowed.
+- **Visible area (crop and zoom) per segment.** A red frame on the video marks the part that will be saved: drag it, resize it by its 8 handles (free proportions), zoom it with the mouse wheel or the +/- buttons, reset with *Full frame*. Each card keeps its own area. The saved clip has the original resolution; the area is scaled up to fit and any leftover space is black. Ctrl+wheel zooms only the on-screen view for precise placement. Segments with an area are always saved in Precise mode.
 - **Every segment is saved as its own file** (`name_part1`, `name_part2`, ...) next to your choice of folder.
 - **Two cutting modes:**
   - **Fast** (default): no re-encoding, nearly instant; cut points snap to the nearest keyframes.
