@@ -669,3 +669,41 @@ def test_real_core_end_to_end_two_cards(app, quadrants, monkeypatch, tmp_path, f
             assert (int(v["width"]), int(v["height"])) == (320, 240)
     finally:
         w.close()
+
+
+@pytest.mark.parametrize("lang", LANGS)
+def test_fullscreen_footer_with_full_frame_has_no_overlaps(win, lang):
+    import itertools
+    from PySide6.QtCore import QRect
+    win.set_language(lang)
+    win.enter_fullscreen()
+    f = win.fullscreen_window()
+    f.show_panels(animate=False)
+    pump(40)
+    ft = f.footer
+    allw = [ft.play_button, ft.position_slider, ft.position_label, ft.full_frame_button, ft.mute_button,
+            ft.volume_slider, ft.range_slider, ft.start_label, ft.start_edit, ft.set_start_button,
+            ft.end_label, ft.end_edit, ft.set_end_button, ft.add_button]
+    rects = {w: QRect(w.mapTo(ft, w.rect().topLeft()), w.size()) for w in allw}
+    for w, r in rects.items():
+        assert w.isVisibleTo(ft) and ft.rect().contains(r)
+    for a, b in itertools.combinations(allw, 2):
+        assert not rects[a].intersects(rects[b]), (a, b)
+    fm = ft.full_frame_button.fontMetrics()
+    assert ft.full_frame_button.width() >= fm.horizontalAdvance(ft.full_frame_button.text())
+    win.exit_fullscreen()
+
+
+@pytest.mark.parametrize("lang", LANGS)
+def test_cropped_card_keeps_the_standard_size_and_shows_the_size(win, ov, lang):
+    win.set_language(lang)
+    win.add_segment()
+    ov.set_area(Crop(0, 0, 1000, 300), emit=True)        # clamped to the 640x360 picture
+    win.add_segment()
+    pump(40)
+    a, b = win.segment_list.card(0), win.segment_list.card(1)
+    assert a.size() == b.size()
+    mark = b.crop_label
+    assert "x" in mark.text() and mark.isVisibleTo(win)
+    assert a.crop_label.text() == ""
+    assert b.toolTip().endswith(f"({mark.text()})")

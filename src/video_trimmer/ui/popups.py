@@ -101,7 +101,7 @@ class ModeInfoPopup(GlassPopup):
         self.setObjectName("modeInfoPopup")
         self.setFixedWidth(self.WIDTH)
         self._labels: list[QLabel] = []
-        for _ in range(2):
+        for _ in range(3):      # fast, precise, v0.4.0: areas are always saved precisely
             lab = QLabel()
             lab.setObjectName("popupText")
             lab.setWordWrap(True)
@@ -112,6 +112,7 @@ class ModeInfoPopup(GlassPopup):
     def set_language(self, lang: str) -> None:
         for lab, mode in zip(self._labels, ("fast", "precise")):
             lab.setText(f"{i18n.tr(lang, 'mode_' + mode)}: {i18n.tr(lang, 'mode_' + mode + '_tip')}")
+        self._labels[2].setText(i18n.tr(lang, "mode_crop_note"))
         self.fit()
 
     def fit(self) -> None:

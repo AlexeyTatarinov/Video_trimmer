@@ -497,6 +497,26 @@ def paint_icon(p: QPainter, kind: str, rect: QRectF, color: QColor, muted: bool 
         path.lineTo(l, t)
         path.closeSubpath()
         p.drawPath(path)
+    elif kind in ("zoom_in", "zoom_out"):        # v0.4.0: magnifier with + / -
+        lens = QPointF(c.x() - s * 0.07, c.y() - s * 0.07)
+        rr = s * 0.25
+        p.drawEllipse(lens, rr, rr)
+        p.drawLine(QPointF(c.x() + s * 0.11, c.y() + s * 0.11), QPointF(c.x() + s * 0.36, c.y() + s * 0.36))
+        d = rr * 0.5
+        p.drawLine(QPointF(lens.x() - d, lens.y()), QPointF(lens.x() + d, lens.y()))
+        if kind == "zoom_in":
+            p.drawLine(QPointF(lens.x(), lens.y() - d), QPointF(lens.x(), lens.y() + d))
+    elif kind == "full_frame":                   # four corners pointing outwards
+        e, a = s * 0.34, s * 0.16
+        for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1)):
+            corner = QPointF(c.x() + sx * e, c.y() + sy * e)
+            p.drawLine(corner, QPointF(corner.x() - sx * a, corner.y()))
+            p.drawLine(corner, QPointF(corner.x(), corner.y() - sy * a))
+    elif kind == "fit_view":                     # a screen with a rectangle fitted inside
+        p.drawRoundedRect(QRectF(c.x() - s * 0.36, c.y() - s * 0.26, s * 0.72, s * 0.52), s * 0.06, s * 0.06)
+        p.setBrush(color)
+        p.setPen(Qt.NoPen)
+        p.drawRect(QRectF(c.x() - s * 0.18, c.y() - s * 0.12, s * 0.36, s * 0.24))
     p.restore()
 
 
