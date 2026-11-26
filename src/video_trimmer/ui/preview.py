@@ -153,15 +153,10 @@ class PreviewPlayer(QObject):
         self._seek_timer.timeout.connect(self._on_seek_timer)
         if MULTIMEDIA_AVAILABLE:
             self.video_widget: QWidget = ResponsiveVideoWidget()
-            self._player = QMediaPlayer(self)
             if _audio_allowed():
                 self._audio = QAudioOutput(self)
-                self._player.setAudioOutput(self._audio)
-                self._apply_audio()
-            self._player.setVideoSink(self.video_widget.videoSink())
-            self._player.positionChanged.connect(lambda ms: self.positionChanged.emit(int(ms)))
-            self._player.playbackStateChanged.connect(self._on_state)
-            self._player.errorOccurred.connect(lambda *_a: self.error.emit())
+            self._sink_override = None
+            self._player = self._make_player()
         else:
             self._player = None
             self.video_widget = QLabel("QtMultimedia (PySide6-Addons) is not installed:\npreview unavailable.")
@@ -169,14 +164,28 @@ class PreviewPlayer(QObject):
             self.video_widget.setMinimumSize(VIDEO_MIN_SIZE)
             self.video_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
 
+    def _make_player(self):
+        player = QMediaPlayer(self)
+        if self._audio is not None:
+            player.setAudioOutput(self._audio)
+        player.setVideoSink(self._sink_override or self.video_widget.videoSink())
+        player.positionChanged.connect(lambda ms: self.positionChanged.emit(int(ms)))
+        player.playbackStateChanged.connect(self._on_state)
+        player.errorOccurred.connect(lambda *_a: self.error.emit())
+        if self._audio is not None:
+            self._apply_audio()
+        return player
+
     # ---- video output (v0.2.3: the full-screen widget takes the picture over and gives it back)
     def set_video_sink(self, sink) -> None:
         """Send the frames to ``sink`` (a QVideoSink) instead of the preview widget."""
+        self._sink_override = sink
         if self._player is not None:
             self._player.setVideoSink(sink)
 
     def restore_video_output(self) -> None:
         """Send the frames to the preview widget again."""
+        self._sink_override = None
         if self._player is not None:
             self._player.setVideoSink(self.video_widget.videoSink())
 
@@ -280,5 +289,23 @@ class PreviewPlayer(QObject):
         self._pending = None
         self._seek_timer.stop()
         if self._player:
-            self._player.stop()
-            self._player.setSource(QUrl())
+            # Windows (Media Foundation) keeps the file open until the player object is gone:
+            # destroy it now and start a fresh one, so the file can be moved or deleted.
+            old = self._player
+            old.stop()
+            old.setSource(QUrl())
+            try:
+                old.positionChanged.disconnect()
+                old.playbackStateChanged.disconnect()
+                old.errorOccurred.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            old.setVideoSink(None)
+            old.setParent(None)
+            try:
+                import shiboken6
+                shiboken6.delete(old)
+            except Exception:              # noqa: BLE001
+                old.deleteLater()
+            self._playing = False
+            self._player = self._make_player()

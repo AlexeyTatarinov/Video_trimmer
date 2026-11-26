@@ -88,6 +88,17 @@ def _check_file(path: "str | Path") -> Path:
     return p
 
 
+
+def no_window_kwargs() -> dict:
+    """subprocess kwargs that stop Windows from opening a console window for ffmpeg/ffprobe
+    (the packaged app has no console, so every child would otherwise get its own black window)."""
+    if sys.platform != "win32":
+        return {}
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 1)
+    si.wShowWindow = 0                                     # SW_HIDE
+    return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000), "startupinfo": si}
+
 def _tail(text: str, lines: int = 3) -> str:
     parts = [ln.strip() for ln in (text or "").strip().splitlines() if ln.strip()]
     return " | ".join(parts[-lines:]) if parts else "unknown error"
@@ -96,7 +107,7 @@ def _tail(text: str, lines: int = 3) -> str:
 def _ffprobe_json(path: Path, args: "list[str]") -> dict:
     cmd = [_tool("ffprobe"), "-v", "error", *args, "-of", "json", str(path)]
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
+        res = subprocess.run(cmd, capture_output=True, text=True, errors="replace", **no_window_kwargs())
     except OSError as exc:
         raise TrimError(f"Could not run ffprobe: {exc}") from exc
     if res.returncode != 0:
@@ -266,7 +277,8 @@ def _run_ffmpeg(args: "list[str]", total: float, on_fraction: "Callable[[float],
     with tempfile.TemporaryFile() as errf:
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=errf,
-                                    stdin=subprocess.DEVNULL, text=True, errors="replace")
+                                    stdin=subprocess.DEVNULL, text=True, errors="replace",
+                                    **no_window_kwargs())
         except OSError as exc:
             raise TrimError(f"Could not run ffmpeg: {exc}") from exc
         try:
