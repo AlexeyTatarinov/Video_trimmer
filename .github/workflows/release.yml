@@ -46,6 +46,13 @@ jobs:
           python -m pip install -r requirements.txt pyinstaller send2trash
           if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
+      - name: Recycle Bin works on Windows (real shell call)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:PYTHONPATH = "$PWD\src"
+          python -c "import os,tempfile; from video_trimmer import trash; d=tempfile.mkdtemp(); p=os.path.join(d,'clip.mp4'); open(p,'wb').write(b'x'); trash._move(p); assert not os.path.exists(p); print('RECYCLE OK')"
+          if ($LASTEXITCODE -ne 0) { throw "recycle check failed" }
       - name: Determine version
         run: |
           $ErrorActionPreference = 'Stop'

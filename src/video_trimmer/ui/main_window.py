@@ -1,6 +1,8 @@
 """Main window: preview, range selection, segment list, save."""
 from __future__ import annotations
 
+import time
+
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal, Slot
@@ -36,6 +38,8 @@ TIME_FIELD_SIZE = QSize(116, 32)
 
 
 class MainWindow(QMainWindow):
+    TRASH_RETRIES = 8          # v0.4.1: Windows may hold the file a moment after the preview let go
+    TRASH_RETRY_MS = 250
     # Relay used to run worker callbacks on the GUI thread (queued across threads).
     _gui_call = Signal(object)
     displayTimeChanged = Signal(int)   # ms shown by the position slider / label (also while paused)
@@ -930,12 +934,25 @@ class MainWindow(QMainWindow):
         """Release the preview, move ``src`` to the Recycle Bin, return to the no-video state.
         Returns (moved, error_text)."""
         self.player.release()
-        QApplication.processEvents()          # let the player really close the file first
-        try:
-            trash.move_to_trash(src)
-        except Exception as exc:              # noqa: BLE001 - any failure is only a warning
+        if hasattr(self.video_widget, "clear_image"):
+            self.video_widget.clear_image()
+        error = None
+        for attempt in range(self.TRASH_RETRIES):
+            QApplication.processEvents()      # let the player really close the file first
+            try:
+                trash.move_to_trash(src)
+                error = None
+                break
+            except FileNotFoundError as exc:  # gone already: retrying cannot help
+                error = exc
+                break
+            except Exception as exc:          # noqa: BLE001 - locked: wait a little and try again
+                error = exc
+                if attempt + 1 < self.TRASH_RETRIES:
+                    time.sleep(self.TRASH_RETRY_MS / 1000.0)
+        if error is not None:
             self.player.set_source(src)       # give the preview back: nothing was lost
-            return False, str(exc) or exc.__class__.__name__
+            return False, str(error) or error.__class__.__name__
         if self.is_fullscreen():
             self.exit_fullscreen()            # nothing left to show full screen
         self._unload_video()

@@ -15,7 +15,9 @@ def _check_tool(name: str) -> "str | None":
     except core.TrimError as exc:
         return str(exc)
     try:
-        res = subprocess.run([exe, "-version"], capture_output=True, text=True, timeout=60)
+        from video_trimmer.core import no_window_kwargs
+        res = subprocess.run([exe, "-version"], capture_output=True, text=True, timeout=60,
+                             **no_window_kwargs())
     except (OSError, subprocess.SubprocessError) as exc:
         return f"{name} found at {exe} but does not run: {exc}"
     if res.returncode != 0:
